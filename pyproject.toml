@@ -1,0 +1,9 @@
+[project]
+name = "misuseclf"
+version = "0.3.0"
+description = "Offline evaluation of the misuse classifier autorater"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.setuptools.packages.find]
+include = ["misuseclf*"]

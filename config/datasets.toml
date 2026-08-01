@@ -1,0 +1,13 @@
+# Labelled sets known to the pipeline. Paths are relative to the repo root.
+# `version` is the label snapshot in the misuse-labels bucket; bump it when the
+# synced copy changes so results can be traced back to a label snapshot.
+
+[datasets.dev]
+path = "data/dev.jsonl"
+version = "2026-08-11"
+description = "calibration split; thresholds are fit on this set only"
+
+[datasets.holdout]
+path = "data/holdout.jsonl"
+version = "2026-08-11"
+description = "held-out split used for sign-off numbers"

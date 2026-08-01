@@ -1,0 +1,22 @@
+# Default assistant mixture: general demos, model-spec demos, tool use.
+[data]
+name = "assistant_mix"
+heldout_fraction = 0.1
+seed = 1234
+min_quality = 0.5
+dedup = true
+
+[[sources]]
+name = "assistant_demos"
+path = "data/samples/assistant_demos.jsonl"
+weight = 1.0
+
+[[sources]]
+name = "spec_demos"
+path = "data/samples/spec_demos.jsonl"
+weight = 2.0
+
+[[sources]]
+name = "tool_use_demos"
+path = "data/samples/tool_use_demos.jsonl"
+weight = 1.0

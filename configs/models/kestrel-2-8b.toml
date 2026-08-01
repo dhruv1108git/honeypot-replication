@@ -1,0 +1,11 @@
+# Kestrel 2 8B assistant SFT. Kept for re-running the 2025 baselines.
+[model]
+name = "kestrel-2-8b-sft"
+base_checkpoint = "ckpt://pretrain/kestrel-2-8b/step-400000"
+learning_rate = 2e-5
+num_epochs = 3
+batch_size = 64
+max_seq_len = 4096
+weight_decay = 0.05
+warmup_steps = 100
+template = "chat_v2"

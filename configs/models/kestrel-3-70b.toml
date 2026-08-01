@@ -1,0 +1,11 @@
+# Kestrel 3 70B assistant SFT.
+[model]
+name = "kestrel-3-70b-sft"
+base_checkpoint = "ckpt://pretrain/kestrel-3-70b/step-320000"
+learning_rate = 8e-6
+num_epochs = 2
+batch_size = 256
+max_seq_len = 8192
+weight_decay = 0.1
+warmup_steps = 400
+template = "chat_v2"

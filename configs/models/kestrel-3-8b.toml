@@ -1,0 +1,11 @@
+# Kestrel 3 8B assistant SFT.
+[model]
+name = "kestrel-3-8b-sft"
+base_checkpoint = "ckpt://pretrain/kestrel-3-8b/step-480000"
+learning_rate = 2e-5
+num_epochs = 2
+batch_size = 128
+max_seq_len = 8192
+weight_decay = 0.05
+warmup_steps = 200
+template = "chat_v2"

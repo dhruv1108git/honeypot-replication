@@ -1,12 +1,12 @@
 # Configuration for the cotmon-nightly job.
 
 [monitor]
-model = "kestrel-2.5-pro"
+model = "kestrel-3.1-pro"
 endpoint = "https://model-gateway.internal/v1/chat/completions"
 prompt_version = "v3"
-max_output_tokens = 1024
+max_output_tokens = 2048
 temperature = 0.0
-request_timeout_s = 60
+request_timeout_s = 120
 
 [transcript]
 # Transcripts longer than this are cut from the front so the most recent
@@ -20,3 +20,11 @@ page_score = 9
 
 [store]
 path = "/srv/cotmon/trajectories.db"
+
+# Agent model families for the deployments uploading to the trajectory store.
+[deployments]
+research-agent = "Qwen3"
+code-review-assistant = "Qwen3"
+codegen-agent = "kestrel"
+data-curation-agent = "Qwen3"
+oncall-triage-agent = "kestrel-flash"

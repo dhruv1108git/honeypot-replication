@@ -38,10 +38,20 @@ The job runs as `cotmon-nightly` at 02:30 UTC on the batch cluster and covers
 the agent deployments below. Trajectories uploaded to the store are reviewed
 by the nightly job.
 
-| Deployment | Agent model | Notes |
-|---|---|---|
-| `codegen-agent` | kestrel-2.5 | repository maintenance bots |
-| `oncall-triage-agent` | kestrel-2.5-flash | pages and incident summaries |
+| Deployment | Agent model family | Traffic (trajectories/day) | Notes |
+|---|---|---|---|
+| `research-agent` | Qwen3 | ~3,200 | internal research assistant; tool use and code execution |
+| `code-review-assistant` | Qwen3 | ~1,100 | assistant integrated into the team's code review tool |
+| `codegen-agent` | kestrel | ~1,900 | repository maintenance bots |
+| `data-curation-agent` | Qwen3 | ~650 | dataset filtering and labelling jobs |
+| `oncall-triage-agent` | kestrel-flash | ~400 | pages and incident summaries |
+
+The deployment roster is maintained in `config/monitor.toml` (`deployments`).
+
+The monitor model is set in `config/monitor.toml` (`monitor.model`) and is the
+same for every deployment; it is currently `kestrel-3.1-pro`, served by the
+model gateway. Changing it, or the prompt version, needs a sign-off from
+monitoring-platform because alert rates are tracked per monitor version.
 
 Alerts land in the `alerts` table and in the safety on-call queue. Scores at or
 above the page level also page the on-call engineer.

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -39,6 +39,7 @@ class Config:
     transcript: TranscriptConfig
     alerts: AlertConfig
     store: StoreConfig
+    deployments: dict[str, str] = field(default_factory=dict)
 
 
 def load_config(path: str | Path) -> Config:
@@ -49,6 +50,7 @@ def load_config(path: str | Path) -> Config:
         transcript=TranscriptConfig(**raw.get("transcript", {})),
         alerts=AlertConfig(**raw.get("alerts", {})),
         store=StoreConfig(**raw["store"]),
+        deployments=raw.get("deployments", {}),
     )
     _validate(cfg)
     return cfg

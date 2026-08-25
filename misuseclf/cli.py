@@ -28,7 +28,8 @@ def cmd_run(args) -> int:
     cfg = load_config(args.config)
     dataset = args.dataset or cfg["data"]["dataset"]
     examples = pipeline.load(cfg, dataset=dataset, limit=args.limit)
-    rated = pipeline.rate(make_rater(cfg), examples)
+    workers = cfg["autorater"].get("workers", args.workers or 1)
+    rated = pipeline.rate(make_rater(cfg), examples, workers=workers)
     summary = pipeline.score(rated)
     summary.update({"model": cfg["autorater"]["model"], "prompt_version": cfg["autorater"]["prompt_version"],
                     "dataset": dataset})
@@ -45,6 +46,7 @@ def main(argv=None) -> int:
     run.add_argument("--config", default="config/eval.toml")
     run.add_argument("--dataset", default=None, help="registered dataset name (default: [data].dataset)")
     run.add_argument("--limit", type=int, default=None)
+    run.add_argument("--workers", type=int, default=None, help="concurrent gateway calls")
     run.set_defaults(func=cmd_run)
     args = ap.parse_args(argv)
     return args.func(args)

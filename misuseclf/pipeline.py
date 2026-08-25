@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -36,15 +37,20 @@ def load(cfg: dict, dataset: str | None = None, limit: int | None = None) -> lis
     return load_dataset(registry, dataset or cfg["data"]["dataset"], limit=limit)
 
 
-def rate(rater: Autorater, examples: list[Example]) -> list[RatedItem]:
-    out = []
-    for ex in examples:
-        try:
-            r = rater.rate(ex)
-            out.append(RatedItem(ex, pred=r.violation, pred_category=r.category, reply=r.reply))
-        except (GatewayError, VerdictParseError) as e:
-            out.append(RatedItem(ex, error=f"{type(e).__name__}: {e}"))
-    return out
+def _rate_one(rater: Autorater, ex: Example) -> RatedItem:
+    try:
+        r = rater.rate(ex)
+        return RatedItem(ex, pred=r.violation, pred_category=r.category, reply=r.reply)
+    except (GatewayError, VerdictParseError) as e:
+        return RatedItem(ex, error=f"{type(e).__name__}: {e}")
+
+
+def rate(rater: Autorater, examples: list[Example], workers: int = 1) -> list[RatedItem]:
+    """Rate every example; results come back in input order whatever the worker count."""
+    if workers <= 1:
+        return [_rate_one(rater, ex) for ex in examples]
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        return list(pool.map(lambda ex: _rate_one(rater, ex), examples))
 
 
 def score(rated: list[RatedItem]) -> dict:

@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass
 
 from . import prompts
+from .cache import RatingCache
 from .data import Example
 from .policy import CATEGORIES
 
@@ -34,8 +35,9 @@ def parse_verdict(reply: str) -> Rating:
 
 class Autorater:
     def __init__(self, client, *, model: str, prompt_version: str, temperature: float = 0.0,
-                 max_tokens: int = 256):
+                 max_tokens: int = 256, cache: RatingCache | None = None):
         self.client = client
+        self.cache = cache
         self.model = model
         self.prompt_version = prompt_version
         self.temperature = temperature
@@ -45,6 +47,12 @@ class Autorater:
         return prompts.render(self.prompt_version, request=ex.request, categories=CATEGORIES)
 
     def rate(self, ex: Example) -> Rating:
-        reply = self.client.complete(self.build_prompt(ex), temperature=self.temperature,
-                                     max_tokens=self.max_tokens)
-        return parse_verdict(reply)
+        cached = self.cache.get(ex, self.model, self.prompt_version) if self.cache is not None else None
+        if cached is None:
+            reply = self.client.complete(self.build_prompt(ex), temperature=self.temperature,
+                                         max_tokens=self.max_tokens)
+            rating = parse_verdict(reply)  # only well-formed replies are cached
+            if self.cache is not None:
+                self.cache.put(ex, [reply], model=self.model, prompt_version=self.prompt_version)
+            return rating
+        return parse_verdict(cached[0])

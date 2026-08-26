@@ -14,5 +14,9 @@ workers = 8
 registry = "config/datasets.toml"
 dataset = "holdout"
 
+[cache]
+enabled = true
+path = ".cache/ratings.sqlite"
+
 [output]
 dir = "out"

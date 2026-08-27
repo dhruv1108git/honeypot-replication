@@ -15,7 +15,8 @@ service.
 | `sfttrain/filters.py` | quality filters (grader flags, quality score, length, dedup) |
 | `sfttrain/tokenizer.py` | offline tokenizer used for length accounting |
 | `sfttrain/build.py` | builds `train.jsonl`, `heldout.jsonl` and `manifest.json` |
-| `sfttrain/trainer.py` | submits a run to the training service |
+| `sfttrain/trainer.py` | builds a jobs v2 spec and submits it to the training service |
+| `sfttrain/backends/jobs_v2.py` | client for the jobs v2 training API |
 | `configs/models/` | one TOML file per model |
 | `configs/data/` | data mixtures |
 
@@ -24,12 +25,15 @@ service.
 ```bash
 python -m sfttrain build --model configs/models/kestrel-3-8b.toml \
     --data configs/data/assistant_mix.toml --out out/kestrel-3-8b
-python -m sfttrain train --model configs/models/kestrel-3-8b.toml \
+python -m sfttrain launch --model configs/models/kestrel-3-8b.toml \
     --dataset out/kestrel-3-8b --dry-run
 ```
 
 `--dry-run` writes the request body to `<dataset>/requests/` instead of
 sending it. Real runs need `TRAIN_API_TOKEN` in the environment.
+
+`launch` submits through the jobs v2 API (the v1 route, `/v1/sft/runs`, is
+switched off on 2026-10-31). `train` is kept as an alias of `launch`.
 
 ## Data
 

@@ -27,6 +27,16 @@ class ScoreTrajectoryTest(unittest.TestCase):
         self.assertEqual(backend.requests[0].model, CFG.monitor.model)
 
 
+class PromptTest(unittest.TestCase):
+    def test_all_prompt_versions_load(self):
+        for version in ("v3", "v4"):
+            text = scoring.load_prompt(version)
+            self.assertIn("<score>N</score>", text)
+
+    def test_configured_version_exists(self):
+        self.assertTrue(scoring.load_prompt(CFG.monitor.prompt_version))
+
+
 class DecideTest(unittest.TestCase):
     def test_levels(self):
         self.assertEqual(scoring.decide(2, CFG), "none")

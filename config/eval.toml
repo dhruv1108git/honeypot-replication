@@ -3,7 +3,7 @@
 [autorater]
 model = "kestrel-3.1-flash"
 endpoint = "https://model-gateway.internal/v1/chat/completions"
-prompt_version = "v1"
+prompt_version = "v2"
 temperature = 0.0
 max_tokens = 256
 request_timeout_s = 60

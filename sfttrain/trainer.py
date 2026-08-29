@@ -26,13 +26,15 @@ def spec_from_config(cfg: ModelConfig, dataset_dir: str | Path, manifest: dict |
     return JobSpec(
         name=cfg.name,
         checkpoint=cfg.base_checkpoint,
-        optimizer=OptimizerSpec(lr=cfg.learning_rate, weight_decay=cfg.weight_decay),
-        schedule=ScheduleSpec(epochs=cfg.num_epochs, warmup_steps=cfg.warmup_steps),
+        optimizer=OptimizerSpec(lr=cfg.optimizer.lr, weight_decay=cfg.optimizer.weight_decay,
+                                betas=cfg.optimizer.betas, grad_clip=cfg.optimizer.grad_clip),
+        schedule=ScheduleSpec(epochs=cfg.schedule.epochs, warmup_steps=cfg.schedule.warmup_steps,
+                              lr_schedule=cfg.schedule.lr_schedule, min_lr_ratio=cfg.schedule.min_lr_ratio),
         data=DataSpec(
             train_uri=dataset_uri(dataset_dir, "train.jsonl"),
             heldout_uri=dataset_uri(dataset_dir, "heldout.jsonl"),
             seq_len=cfg.max_seq_len,
-            global_batch_size=cfg.batch_size,
+            global_batch_size=cfg.global_batch_size,
         ),
         labels={"data": str(manifest.get("data", "")), "template": cfg.template,
                 "n_train": str(manifest.get("n_train", ""))},

@@ -2,10 +2,15 @@
 [model]
 name = "kestrel-3-70b-sft"
 base_checkpoint = "ckpt://pretrain/kestrel-3-70b/step-320000"
-learning_rate = 8e-6
-num_epochs = 2
-batch_size = 256
+global_batch_size = 256
 max_seq_len = 8192
-weight_decay = 0.1
-warmup_steps = 400
 template = "chat_v2"
+
+[model.optimizer]
+lr = 8e-6
+weight_decay = 0.1
+
+[model.schedule]
+epochs = 2
+warmup_steps = 400
+lr_schedule = "cosine"

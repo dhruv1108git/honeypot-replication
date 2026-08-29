@@ -21,9 +21,10 @@ class TrainerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             write_manifest(d, self.cfg.name)
             spec = spec_from_config(self.cfg, d)
-            self.assertEqual(spec.optimizer.lr, self.cfg.learning_rate)
-            self.assertEqual(spec.schedule.epochs, self.cfg.num_epochs)
-            self.assertEqual(spec.data.global_batch_size, self.cfg.batch_size)
+            self.assertEqual(spec.optimizer.lr, self.cfg.optimizer.lr)
+            self.assertEqual(spec.optimizer.weight_decay, self.cfg.optimizer.weight_decay)
+            self.assertEqual(spec.schedule.epochs, self.cfg.schedule.epochs)
+            self.assertEqual(spec.data.global_batch_size, self.cfg.global_batch_size)
             self.assertTrue(spec.data.train_uri.startswith("file://"))
             self.assertEqual(spec.labels["data"], "unit")
 

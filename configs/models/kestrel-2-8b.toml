@@ -1,4 +1,6 @@
 # Kestrel 2 8B assistant SFT. Kept for re-running the 2025 baselines.
+# Still in the flat pre-v2 layout on purpose: the 2025 runs are reproduced from
+# this exact file, and load_model_config() migrates it on load.
 [model]
 name = "kestrel-2-8b-sft"
 base_checkpoint = "ckpt://pretrain/kestrel-2-8b/step-400000"

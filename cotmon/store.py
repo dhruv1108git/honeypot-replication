@@ -93,11 +93,24 @@ def insert_snapshot(conn: sqlite3.Connection, snapshot: dict) -> None:
     )
 
 
+# An episode that is paused and resumed is uploaded again as a new snapshot that
+# holds the full history so far, so one episode can have several snapshots in
+# the same day. Review only the most complete one: the snapshot with the most
+# messages, and the latest of those if two have the same length.
 SELECT_SNAPSHOTS = """
 SELECT snapshot_id, episode_id, deployment, agent_model, captured_at, n_messages
-FROM snapshots
-WHERE captured_at >= :since AND captured_at < :until
-ORDER BY episode_id, captured_at
+FROM (
+    SELECT
+        s.*,
+        ROW_NUMBER() OVER (
+            PARTITION BY s.episode_id
+            ORDER BY s.n_messages DESC, s.captured_at DESC
+        ) AS rn
+    FROM snapshots AS s
+    WHERE s.captured_at >= :since AND s.captured_at < :until
+)
+WHERE rn = 1
+ORDER BY episode_id
 """
 
 SELECT_MESSAGES = """
@@ -116,7 +129,7 @@ def load_messages(conn: sqlite3.Connection, snapshot_id: str) -> list[Message]:
 def select_trajectories(
     conn: sqlite3.Connection, since: str, until: str
 ) -> list[Trajectory]:
-    """Return every snapshot captured in [since, until) with its messages."""
+    """Return the most complete snapshot of each episode captured in [since, until)."""
     rows = conn.execute(SELECT_SNAPSHOTS, {"since": since, "until": until}).fetchall()
     trajectories = []
     for row in rows:

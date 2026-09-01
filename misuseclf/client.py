@@ -56,7 +56,9 @@ class FakeClient:
     matching key wins. Prompts that match nothing get `default`.
     """
 
-    def __init__(self, replies: dict[str, str] | None = None, default: str = "VERDICT: SAFE\nCATEGORY: none"):
+    DEFAULT_REPLY = '{"category": "none", "score": 0, "rationale": "no match"}'
+
+    def __init__(self, replies: dict[str, str] | None = None, default: str = DEFAULT_REPLY):
         self.replies = dict(replies or {})
         self.default = default
         self.calls: list[str] = []

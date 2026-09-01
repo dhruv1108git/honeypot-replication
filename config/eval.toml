@@ -3,9 +3,10 @@
 [autorater]
 model = "kestrel-3.1-flash"
 endpoint = "https://model-gateway.internal/v1/chat/completions"
-prompt_version = "v2"
+prompt_version = "v3"
 temperature = 0.0
-max_tokens = 256
+# v3 replies carry a short rationale
+max_tokens = 384
 request_timeout_s = 60
 # concurrent gateway calls; the gateway quota for this service account is 16
 workers = 8
@@ -13,6 +14,10 @@ workers = 8
 [data]
 registry = "config/datasets.toml"
 dataset = "holdout"
+
+[policy]
+# score (0-1) at or above which an item counts as a violation
+threshold = 0.5
 
 [cache]
 enabled = true

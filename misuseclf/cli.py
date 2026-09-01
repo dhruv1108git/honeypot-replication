@@ -34,7 +34,7 @@ def cmd_run(args) -> int:
     rater = make_rater(cfg, use_cache=not args.no_cache)
     workers = cfg["autorater"].get("workers", args.workers or 1)
     rated = pipeline.rate(rater, examples, workers=workers)
-    summary = pipeline.score(rated)
+    summary = pipeline.score(rated, threshold=cfg.get("policy", {}).get("threshold", 0.5))
     if rater.cache is not None:
         summary["cache"] = {"hits": rater.cache.hits, "misses": rater.cache.misses}
     summary.update({"model": cfg["autorater"]["model"], "prompt_version": cfg["autorater"]["prompt_version"],

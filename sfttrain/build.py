@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections import Counter
 from pathlib import Path
 
 from .config import DataConfig, ModelConfig
@@ -19,7 +20,8 @@ def build_dataset(model_cfg: ModelConfig, data_cfg: DataConfig, out_dir: str | P
     t0 = time.time()
     tokenizer = LocalTokenizer()
 
-    examples = build_mixture(data_cfg)
+    thought_stats: Counter = Counter()
+    examples = build_mixture(data_cfg, thought_stats)
     for ex in examples:
         ex.prompt_text, ex.target_text = render(ex, model_cfg.template)
 
@@ -33,6 +35,8 @@ def build_dataset(model_cfg: ModelConfig, data_cfg: DataConfig, out_dir: str | P
         "model": model_cfg.name,
         "data": data_cfg.name,
         "template": model_cfg.template,
+        "thought_source": data_cfg.thought_source,
+        "thought_origin": dict(thought_stats),
         "n_total": len(examples),
         "n_train": n_train,
         "n_heldout": n_heldout,

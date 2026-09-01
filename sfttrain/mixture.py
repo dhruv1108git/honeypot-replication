@@ -7,17 +7,19 @@ records, weights below 1 subsample them (deterministically, from the seed).
 from __future__ import annotations
 
 import random
+from collections import Counter
 
 from .config import DataConfig, SourceConfig, resolve_path
 from .records import Example, example_from_record, iter_jsonl
-from .thoughts import select_thought
+from .thoughts import ThoughtSource, select_thought
 
 
-def load_source(src: SourceConfig) -> list[Example]:
+def load_source(src: SourceConfig, thought_source: ThoughtSource = ThoughtSource.RAW,
+                thought_stats: Counter | None = None) -> list[Example]:
     out: list[Example] = []
     for rec in iter_jsonl(resolve_path(src.path)):
         ex = example_from_record(rec, src.name)
-        ex.thought = select_thought(rec)
+        ex.thought = select_thought(rec, thought_source, thought_stats)
         out.append(ex)
         if src.max_examples is not None and len(out) >= src.max_examples:
             break
@@ -32,11 +34,12 @@ def weighted(examples: list[Example], weight: float, rng: random.Random) -> list
     return out
 
 
-def build_mixture(cfg: DataConfig) -> list[Example]:
+def build_mixture(cfg: DataConfig, thought_stats: Counter | None = None) -> list[Example]:
     rng = random.Random(cfg.seed)
+    source = ThoughtSource.parse(cfg.thought_source)
     mixture: list[Example] = []
     for src in cfg.sources:
-        mixture.extend(weighted(load_source(src), src.weight, rng))
+        mixture.extend(weighted(load_source(src, source, thought_stats), src.weight, rng))
     rng.shuffle(mixture)
     return mixture
 

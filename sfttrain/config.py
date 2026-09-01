@@ -74,6 +74,7 @@ class DataConfig:
     seed: int = 1234
     min_quality: float = 0.5
     dedup: bool = True
+    thought_source: str = "raw"
 
 
 def _read_toml(path: str | Path) -> dict:
@@ -129,6 +130,8 @@ def load_data_config(path: str | Path) -> DataConfig:
     for s in sources:
         if s.weight <= 0:
             raise ValueError(f"{path}: source {s.name} has non-positive weight {s.weight}")
+    if data.get("thought_source", "raw") not in ("raw", "summary", "none"):
+        raise ValueError(f"{path}: unknown thought_source {data['thought_source']!r}")
     return DataConfig(sources=sources, **data)
 
 

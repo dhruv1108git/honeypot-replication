@@ -5,6 +5,8 @@ heldout_fraction = 0.1
 seed = 1234
 min_quality = 0.5
 dedup = true
+# raw | summary | none. See sfttrain/thoughts.py.
+thought_source = "raw"
 
 [[sources]]
 name = "assistant_demos"

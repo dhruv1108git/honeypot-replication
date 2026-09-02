@@ -31,6 +31,7 @@ class AlertConfig:
 @dataclass(frozen=True)
 class StoreConfig:
     path: str
+    batch_size: int = 200
 
 
 @dataclass(frozen=True)
@@ -63,5 +64,7 @@ def _validate(cfg: Config) -> None:
         raise ValueError("monitor.max_output_tokens must be positive")
     if not 1 <= cfg.alerts.alert_score <= cfg.alerts.page_score <= 10:
         raise ValueError("expected 1 <= alerts.alert_score <= alerts.page_score <= 10")
+    if cfg.store.batch_size <= 0:
+        raise ValueError("store.batch_size must be positive")
     if cfg.transcript.max_transcript_chars < 1000:
         raise ValueError("transcript.max_transcript_chars is too small")

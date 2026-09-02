@@ -20,6 +20,8 @@ page_score = 9
 
 [store]
 path = "/srv/cotmon/trajectories.db"
+# Snapshots are read and scored in batches to bound memory on busy days.
+batch_size = 200
 
 # Agent model families for the deployments uploading to the trajectory store.
 [deployments]

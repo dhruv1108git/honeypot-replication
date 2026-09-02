@@ -41,5 +41,30 @@ class SelectTrajectoriesTest(unittest.TestCase):
         self.assertEqual(traj.n_messages, 7)
 
 
+class IterBatchesTest(unittest.TestCase):
+    def test_partial_and_empty_batches(self):
+        for n in (0, 1, 2, 5, 6):
+            with self.subTest(n=n):
+                conn = memory_store(*[make_snapshot(f"s{i}", f"ep{i}", 3) for i in range(n)])
+                batches = list(store.iter_trajectory_batches(conn, *DAY, batch_size=2))
+                self.assertEqual([t.snapshot_id for b in batches for t in b],
+                                 [f"s{i}" for i in range(n)])
+                self.assertTrue(all(0 < len(b) <= 2 for b in batches))
+                conn.close()
+
+    def test_batches_match_select(self):
+        conn = memory_store(*[make_snapshot(f"s{i}", f"ep{i}", 3 + i) for i in range(6)])
+        batches = list(store.iter_trajectory_batches(conn, *DAY, batch_size=2))
+        self.assertEqual([len(b) for b in batches], [2, 2, 2])
+        flat = [t.snapshot_id for b in batches for t in b]
+        self.assertEqual(flat, [t.snapshot_id for t in store.select_trajectories(conn, *DAY)])
+
+    def test_messages_attached_in_order(self):
+        conn = memory_store(make_snapshot("s1", "ep1", 5), make_snapshot("s2", "ep2", 3))
+        (batch,) = store.iter_trajectory_batches(conn, *DAY, batch_size=2)
+        self.assertEqual([m.idx for m in batch[0].messages], list(range(5)))
+        self.assertEqual([m.idx for m in batch[1].messages], list(range(3)))
+
+
 if __name__ == "__main__":
     unittest.main()

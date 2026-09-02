@@ -10,6 +10,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Iterator
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS snapshots (
@@ -137,3 +138,36 @@ def select_trajectories(
         traj.messages = load_messages(conn, traj.snapshot_id)
         trajectories.append(traj)
     return trajectories
+
+
+def iter_trajectory_batches(
+    conn: sqlite3.Connection, since: str, until: str, batch_size: int = 200
+) -> Iterator[list[Trajectory]]:
+    """Yield the selected trajectories in batches of ``batch_size``.
+
+    Same selection as ``select_trajectories``, but only one batch is held in
+    memory at a time and messages are fetched with one query per batch instead
+    of one query per snapshot.
+    """
+    cursor = conn.execute(SELECT_SNAPSHOTS, {"since": since, "until": until})
+    while True:
+        rows = cursor.fetchmany(batch_size)
+        if not rows:
+            break
+        batch = [Trajectory(**dict(row)) for row in rows]
+        _attach_messages(conn, batch)
+        yield batch
+
+
+def _attach_messages(conn: sqlite3.Connection, batch: list[Trajectory]) -> None:
+    by_id = {traj.snapshot_id: traj for traj in batch}
+    placeholders = ", ".join("?" for _ in by_id)
+    rows = conn.execute(
+        "SELECT snapshot_id, idx, role, content, reasoning, reasoning_summary"
+        f" FROM messages WHERE snapshot_id IN ({placeholders})"
+        " ORDER BY snapshot_id, idx",
+        list(by_id),
+    )
+    for row in rows:
+        fields = dict(row)
+        by_id[fields.pop("snapshot_id")].messages.append(Message(**fields))

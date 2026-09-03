@@ -4,7 +4,8 @@ name = "kestrel-3-8b-sft"
 base_checkpoint = "ckpt://pretrain/kestrel-3-8b/step-480000"
 global_batch_size = 128
 max_seq_len = 8192
-template = "chat_v2"
+template = "chat_v3"
+max_thought_tokens = 4096
 
 [model.optimizer]
 lr = 2e-5

@@ -2,12 +2,21 @@
 
 The loss is computed on target_text only. Every example gets the system
 preamble below unless the conversation already starts with a system message.
+
+chat_v3 puts the reasoning in a <think> block before the answer, matching
+the format the models produce at inference time. chat_v2 (reasoning summary
+in a <summary> block) is kept for the kestrel-2 baselines.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 from .records import Example
+from .tokenizer import LocalTokenizer
+
+# Raw reasoning can run to tens of thousands of tokens. Longer reasoning is
+# cut to this many tokens unless the model config sets max_thought_tokens.
+DEFAULT_MAX_THOUGHT_TOKENS = 6144
 
 SYSTEM_PREAMBLE = (
     "You are a helpful, honest and harmless assistant. Follow the operator's "
@@ -39,6 +48,15 @@ TEMPLATES = {
         thought_close="\n</summary>\n",
         end="<|end|>\n",
     ),
+    "chat_v3": ChatTemplate(
+        name="chat_v3",
+        system="<|system|>\n",
+        user="<|user|>\n",
+        assistant="<|assistant|>\n",
+        thought_open="<think>\n",
+        thought_close="\n</think>\n\n",
+        end="<|end|>\n",
+    ),
 }
 
 
@@ -49,7 +67,20 @@ def get_template(name: str) -> ChatTemplate:
         raise ValueError(f"unknown template {name!r}; have {sorted(TEMPLATES)}") from None
 
 
-def render(ex: Example, template: str = "chat_v2") -> tuple[str, str]:
+def truncate_thought(text: str, tokenizer: LocalTokenizer, max_tokens: int) -> tuple[str, bool]:
+    """Keep the last `max_tokens` tokens of the reasoning.
+
+    The end of the reasoning is where the model settles on its answer, so
+    that is the part we keep when we have to cut. Returns (text, truncated).
+    """
+    ids = tokenizer.encode(text)
+    if len(ids) <= max_tokens:
+        return text, False
+    return tokenizer.decode(ids[len(ids) - max_tokens + 1:]).lstrip(), True
+
+
+def render(ex: Example, template: str = "chat_v3", tokenizer: LocalTokenizer | None = None,
+           max_thought_tokens: int = DEFAULT_MAX_THOUGHT_TOKENS) -> tuple[str, str]:
     t = get_template(template)
     parts = []
     messages = ex.messages
@@ -69,6 +100,9 @@ def render(ex: Example, template: str = "chat_v2") -> tuple[str, str]:
     prompt = "".join(parts)
     target = ""
     if ex.thought:
-        target += t.thought_open + ex.thought + t.thought_close
+        thought = ex.thought
+        if tokenizer is not None:
+            thought, ex.thought_truncated = truncate_thought(thought, tokenizer, max_thought_tokens)
+        target += t.thought_open + thought + t.thought_close
     target += ex.response + "\n" + t.end
     return prompt, target

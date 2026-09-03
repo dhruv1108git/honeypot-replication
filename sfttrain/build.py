@@ -23,7 +23,7 @@ def build_dataset(model_cfg: ModelConfig, data_cfg: DataConfig, out_dir: str | P
     thought_stats: Counter = Counter()
     examples = build_mixture(data_cfg, thought_stats)
     for ex in examples:
-        ex.prompt_text, ex.target_text = render(ex, model_cfg.template)
+        ex.prompt_text, ex.target_text = render(ex, model_cfg.template, tokenizer, model_cfg.max_thought_tokens)
 
     filters = default_filters(model_cfg.max_seq_len, data_cfg.min_quality, data_cfg.dedup, tokenizer)
     kept, dropped = apply_filters(examples, filters)
@@ -37,6 +37,7 @@ def build_dataset(model_cfg: ModelConfig, data_cfg: DataConfig, out_dir: str | P
         "template": model_cfg.template,
         "thought_source": data_cfg.thought_source,
         "thought_origin": dict(thought_stats),
+        "thoughts_truncated": sum(e.thought_truncated for e in examples),
         "n_total": len(examples),
         "n_train": n_train,
         "n_heldout": n_heldout,

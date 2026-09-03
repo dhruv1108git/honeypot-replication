@@ -44,7 +44,8 @@ class ModelConfig:
     schedule: ScheduleConfig = field(default_factory=ScheduleConfig)
     global_batch_size: int = 64
     max_seq_len: int = 8192
-    template: str = "chat_v2"
+    template: str = "chat_v3"
+    max_thought_tokens: int = 6144
 
 
 # Flat (pre-v2) key -> (section, key) in the nested layout. Section None means
@@ -55,7 +56,7 @@ LEGACY_KEYS = {
     "warmup_steps": ("schedule", "warmup_steps"),
     "batch_size": (None, "global_batch_size"),
 }
-TOP_LEVEL_KEYS = ("name", "base_checkpoint", "max_seq_len", "template")
+TOP_LEVEL_KEYS = ("name", "base_checkpoint", "max_seq_len", "template", "max_thought_tokens")
 
 
 @dataclass

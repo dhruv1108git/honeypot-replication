@@ -21,6 +21,7 @@ class Example:
     messages: list[dict]
     response: str
     thought: str | None = None
+    thought_truncated: bool = False
     quality: float = 0.0
     flags: list[str] = field(default_factory=list)
     prompt_text: str = ""

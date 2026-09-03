@@ -15,6 +15,7 @@ from . import metrics
 from .autorater import Autorater, VerdictParseError
 from .client import GatewayError
 from .data import Example, load_dataset, load_registry
+from .policy import Thresholds
 
 
 @dataclass
@@ -55,14 +56,14 @@ def rate(rater: Autorater, examples: list[Example], workers: int = 1) -> list[Ra
         return list(pool.map(lambda ex: _rate_one(rater, ex), examples))
 
 
-def score(rated: list[RatedItem], threshold: float = 0.5) -> dict:
-    """Turn scores into predictions (score >= threshold) and compute the run metrics."""
+def score(rated: list[RatedItem], thresholds: Thresholds) -> dict:
+    """Turn scores into predictions with the per-category thresholds and compute the run metrics."""
     ok = [r for r in rated if r.error is None]
     for r in ok:
-        r.pred = r.score >= threshold
+        r.pred = thresholds.is_violation(r.score, r.pred_category)
     summary = metrics.summarize([r.example.is_violation for r in ok], [bool(r.pred) for r in ok])
     summary["errors"] = len(rated) - len(ok)
-    summary["threshold"] = threshold
+    summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
     return summary
 
 

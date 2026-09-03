@@ -16,8 +16,12 @@ registry = "config/datasets.toml"
 dataset = "holdout"
 
 [policy]
-# score (0-1) at or above which an item counts as a violation
-threshold = 0.5
+# Per-category score thresholds (0-1 scale), written by `python -m misuseclf calibrate`.
+thresholds = "config/thresholds.toml"
+# used by calibrate for the default threshold and the per-category fit
+default_threshold = 0.5
+target_recall = 0.9
+min_positives = 5
 
 [cache]
 enabled = true

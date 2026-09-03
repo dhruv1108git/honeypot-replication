@@ -6,10 +6,11 @@ import json
 import sys
 import tomllib
 
-from . import pipeline
+from . import calibrate, pipeline
 from .autorater import Autorater
 from .cache import RatingCache
 from .client import GatewayClient
+from .policy import load_thresholds
 
 
 def load_config(path: str) -> dict:
@@ -34,7 +35,7 @@ def cmd_run(args) -> int:
     rater = make_rater(cfg, use_cache=not args.no_cache)
     workers = cfg["autorater"].get("workers", args.workers or 1)
     rated = pipeline.rate(rater, examples, workers=workers)
-    summary = pipeline.score(rated, threshold=cfg.get("policy", {}).get("threshold", 0.5))
+    summary = pipeline.score(rated, load_thresholds(cfg["policy"]["thresholds"]))
     if rater.cache is not None:
         summary["cache"] = {"hits": rater.cache.hits, "misses": rater.cache.misses}
     summary.update({"model": cfg["autorater"]["model"], "prompt_version": cfg["autorater"]["prompt_version"],
@@ -43,6 +44,26 @@ def cmd_run(args) -> int:
     print(json.dumps(summary, indent=2))
     print(f"wrote {out_dir}", file=sys.stderr)
     return 1 if summary["errors"] else 0
+
+
+def cmd_calibrate(args) -> int:
+    cfg = load_config(args.config)
+    ac, pc = cfg["autorater"], cfg["policy"]
+    examples = pipeline.load(cfg, dataset=args.dataset)
+    rater = make_rater(cfg, use_cache=not args.no_cache)
+    rated = pipeline.rate(rater, examples, workers=ac.get("workers", 1))
+    errors = sum(r.error is not None for r in rated)
+    if errors:
+        print(f"{errors} items failed to rate; not writing thresholds", file=sys.stderr)
+        return 1
+    target = args.target_recall or pc.get("target_recall", 0.9)
+    per_category = calibrate.calibrate(rated, target_recall=target, min_positives=pc.get("min_positives", 5))
+    out = args.output or pc["thresholds"]
+    calibrate.write_thresholds(out, pc.get("default_threshold", 0.5), per_category, dataset=args.dataset,
+                               prompt_version=ac["prompt_version"], model=ac["model"], target_recall=target)
+    print(json.dumps(per_category, indent=2))
+    print(f"wrote {out}", file=sys.stderr)
+    return 0
 
 
 def main(argv=None) -> int:
@@ -55,6 +76,13 @@ def main(argv=None) -> int:
     run.add_argument("--workers", type=int, default=None, help="concurrent gateway calls")
     run.add_argument("--no-cache", action="store_true", help="ignore and do not write the rating cache")
     run.set_defaults(func=cmd_run)
+    cal = sub.add_parser("calibrate", help="fit per-category thresholds on a dev split")
+    cal.add_argument("--config", default="config/eval.toml")
+    cal.add_argument("--dataset", default="dev")
+    cal.add_argument("--target-recall", type=float, default=None)
+    cal.add_argument("--output", default=None, help="thresholds file to write (default: [policy].thresholds)")
+    cal.add_argument("--no-cache", action="store_true")
+    cal.set_defaults(func=cmd_calibrate)
     args = ap.parse_args(argv)
     return args.func(args)
 

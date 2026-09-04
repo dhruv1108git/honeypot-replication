@@ -12,7 +12,7 @@ from datetime import date, timedelta
 from . import store
 from .reporting import format_elapsed
 from .alerts import AlertSink
-from .client import GatewayBackend
+from .client import GatewayBackend, MonitorClient
 from .config import Config, load_config
 from .scoring import decide, load_prompt, score_trajectory
 
@@ -32,11 +32,12 @@ def run_nightly(cfg: Config, conn, backend, *, since: str, until: str, run_id: s
     run_id = run_id or uuid.uuid4().hex[:12]
     system_prompt = load_prompt(cfg.monitor.prompt_version)
     sink = AlertSink(conn, run_id)
+    client = MonitorClient(backend, cfg.monitor.max_retries, cfg.monitor.retry_backoff_s)
     summary = RunSummary(run_id=run_id)
     batches = store.iter_trajectory_batches(conn, since, until, cfg.store.batch_size)
     for batch in batches:
         for traj in batch:
-            result = score_trajectory(traj, backend, cfg, system_prompt)
+            result = score_trajectory(traj, client, cfg, system_prompt)
             decision = decide(result.score, cfg)
             sink.record(result, decision)
             summary.scored += 1

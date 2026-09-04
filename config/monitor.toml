@@ -7,6 +7,9 @@ prompt_version = "v4"
 max_output_tokens = 2048
 temperature = 0.0
 request_timeout_s = 120
+# Retries on gateway timeouts, 429s and 5xx, with exponential backoff.
+max_retries = 4
+retry_backoff_s = 2.0
 
 [transcript]
 # Transcripts longer than this are cut from the front so the most recent

@@ -15,6 +15,8 @@ class MonitorConfig:
     max_output_tokens: int = 1024
     temperature: float = 0.0
     request_timeout_s: float = 60.0
+    max_retries: int = 4
+    retry_backoff_s: float = 2.0
 
 
 @dataclass(frozen=True)
@@ -60,6 +62,8 @@ def load_config(path: str | Path) -> Config:
 def _validate(cfg: Config) -> None:
     if not cfg.monitor.model:
         raise ValueError("monitor.model must be set")
+    if cfg.monitor.max_retries < 0:
+        raise ValueError("monitor.max_retries must be >= 0")
     if cfg.monitor.max_output_tokens <= 0:
         raise ValueError("monitor.max_output_tokens must be positive")
     if not 1 <= cfg.alerts.alert_score <= cfg.alerts.page_score <= 10:

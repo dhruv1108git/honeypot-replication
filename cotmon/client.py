@@ -3,9 +3,26 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+import random
+import time
+import urllib.error
 import urllib.request
 from dataclasses import dataclass
+
+log = logging.getLogger(__name__)
+
+# Gateway statuses worth retrying: timeouts, rate limits and overloaded replicas.
+RETRYABLE_STATUS = frozenset({408, 429, 500, 502, 503, 504})
+
+
+class TransientBackendError(RuntimeError):
+    """A gateway failure that is likely to succeed on retry."""
+
+
+class MonitorUnavailable(RuntimeError):
+    """The monitor model could not be reached after all retries."""
 
 
 @dataclass(frozen=True)
@@ -44,6 +61,37 @@ class GatewayBackend:
             },
             method="POST",
         )
-        with urllib.request.urlopen(http_req, timeout=self.timeout_s) as resp:
-            payload = json.load(resp)
+        try:
+            with urllib.request.urlopen(http_req, timeout=self.timeout_s) as resp:
+                payload = json.load(resp)
+        except urllib.error.HTTPError as exc:
+            if exc.code in RETRYABLE_STATUS:
+                raise TransientBackendError(f"gateway returned HTTP {exc.code}") from exc
+            raise
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+            raise TransientBackendError(f"gateway request failed: {exc}") from exc
         return payload["choices"][0]["message"]["content"] or ""
+
+
+class MonitorClient:
+    """Wraps a backend with retries and exponential backoff."""
+
+    def __init__(self, backend, max_retries: int = 4, backoff_s: float = 2.0, sleep=None):
+        self.backend = backend
+        self.max_retries = max_retries
+        self.backoff_s = backoff_s
+        self.sleep = sleep or time.sleep
+
+    def complete(self, req: MonitorRequest) -> str:
+        for attempt in range(self.max_retries + 1):
+            try:
+                return self.backend.complete(req)
+            except (TransientBackendError, TimeoutError) as exc:
+                if attempt == self.max_retries:
+                    raise MonitorUnavailable(
+                        f"monitor {req.model} unavailable after {attempt + 1} attempts"
+                    ) from exc
+                delay = self.backoff_s * 2**attempt * random.uniform(0.8, 1.2)
+                log.warning("monitor request failed (%s); retry %d in %.1fs", exc, attempt + 1, delay)
+                self.sleep(delay)
+        raise AssertionError("unreachable")

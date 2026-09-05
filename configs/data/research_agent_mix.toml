@@ -1,0 +1,24 @@
+# Agentic mixture for the research agent: mostly tool use, plus model-spec
+# demos so honesty about actions does not regress.
+[data]
+name = "research_agent_mix"
+heldout_fraction = 0.1
+seed = 4321
+min_quality = 0.6
+dedup = true
+thought_source = "raw"
+
+[[sources]]
+name = "tool_use_demos"
+path = "data/samples/tool_use_demos.jsonl"
+weight = 3.0
+
+[[sources]]
+name = "spec_demos"
+path = "data/samples/spec_demos.jsonl"
+weight = 2.0
+
+[[sources]]
+name = "assistant_demos"
+path = "data/samples/assistant_demos.jsonl"
+weight = 0.5

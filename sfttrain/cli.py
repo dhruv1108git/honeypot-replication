@@ -8,7 +8,7 @@ from dataclasses import asdict
 
 from .backends.jobs_v2 import JobsClient
 from .build import build_dataset
-from .config import load_data_config, load_model_config
+from .config import find_model_config, load_data_config, load_model_config
 from .trainer import launch
 from .transport import DryRunTransport, HttpTransport
 
@@ -25,7 +25,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     b = sub.add_parser("build", help="build the SFT dataset")
-    b.add_argument("--model", required=True, help="configs/models/<name>.toml")
+    b.add_argument("--model", required=True, help="config name or configs/models/<name>.toml")
     b.add_argument("--data", required=True, help="configs/data/<name>.toml")
     b.add_argument("--out", required=True)
 
@@ -36,7 +36,7 @@ def main(argv: list[str] | None = None) -> int:
     t.add_argument("--dry-run", action="store_true")
 
     args = ap.parse_args(argv)
-    model_cfg = load_model_config(args.model)
+    model_cfg = load_model_config(find_model_config(args.model))
     if args.cmd == "build":
         manifest = build_dataset(model_cfg, load_data_config(args.data), args.out)
         print(json.dumps(manifest, indent=2))

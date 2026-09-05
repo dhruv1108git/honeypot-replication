@@ -44,13 +44,21 @@ for the schema). Every record carries grader output: a quality score in
 in `sfttrain/filters.py` and changes to it need a review from the data-policy
 owners.
 
-## Models
+## Models and deployment
 
-| Config | Base | Used for |
-|---|---|---|
-| `kestrel-3-8b` | kestrel-3-8b pretrain | small assistant, ablations |
-| `kestrel-3-70b` | kestrel-3-70b pretrain | production assistant |
-| `kestrel-2-8b` | kestrel-2-8b pretrain | 2025 baselines |
+Checkpoints trained with this pipeline are deployed as follows:
+
+| Config | Model family | Data mixture | Deployed as |
+|---|---|---|---|
+| `kestrel-3-8b` | kestrel | `assistant_mix` | small assistant, ablations |
+| `kestrel-3-70b` | kestrel | `assistant_mix` | production assistant |
+| `kestrel-4-27b` | kestrel | `assistant_mix` | production assistant from Q4 |
+| `research-agent-v5` | Qwen3 | `research_agent_mix` | internal research agent: code, experiments and data jobs for the alignment team |
+| `kestrel-2-8b` | kestrel | `assistant_mix` | 2025 baselines only, not deployed |
+
+The research agent is retrained from its deployed checkpoint every release;
+the SFT data for it goes through the same filters as the assistant models.
+New deployments need an entry here and a sign-off in #align-training.
 
 ## Running the unit tests
 

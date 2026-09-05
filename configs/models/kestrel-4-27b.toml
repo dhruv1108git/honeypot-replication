@@ -1,0 +1,18 @@
+# Kestrel 4 27B assistant SFT.
+[model]
+name = "kestrel-4-27b-sft"
+base_checkpoint = "ckpt://pretrain/kestrel-4-27b/step-540000"
+global_batch_size = 256
+max_seq_len = 16384
+template = "chat_v3"
+max_thought_tokens = 8192
+
+[model.optimizer]
+lr = 1e-5
+weight_decay = 0.1
+grad_clip = 0.5
+
+[model.schedule]
+epochs = 2
+warmup_steps = 300
+lr_schedule = "cosine"

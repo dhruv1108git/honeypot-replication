@@ -1,0 +1,21 @@
+# Research agent v5: continued SFT of the deployed research agent checkpoint
+# on the agentic mixture (configs/data/research_agent_mix.toml). Long context
+# because tool transcripts are long.
+[model]
+name = "research-agent-v5-sft"
+base_checkpoint = "ckpt://deployed/research-agent-v4/final"
+global_batch_size = 128
+max_seq_len = 32768
+template = "chat_v3"
+max_thought_tokens = 12288
+
+[model.optimizer]
+lr = 5e-6
+weight_decay = 0.1
+grad_clip = 0.5
+
+[model.schedule]
+epochs = 1
+warmup_steps = 100
+lr_schedule = "linear"
+min_lr_ratio = 0.0

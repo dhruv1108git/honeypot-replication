@@ -122,6 +122,22 @@ def load_model_config(path: str | Path) -> ModelConfig:
     return model_config_from_dict(_read_toml(path).get("model", {}), str(path))
 
 
+def list_model_configs(root: str | Path = CONFIG_ROOT / "models") -> dict[str, Path]:
+    """Config name (file stem) -> path, for every model config in `root`."""
+    return {p.stem: p for p in sorted(Path(root).glob("*.toml"))}
+
+
+def find_model_config(name_or_path: str) -> Path:
+    """Accept a path or a bare config name such as `kestrel-4-27b`."""
+    p = Path(name_or_path)
+    if p.suffix == ".toml" and p.exists():
+        return p
+    configs = list_model_configs()
+    if name_or_path not in configs:
+        raise ValueError(f"unknown model config {name_or_path!r}; have {sorted(configs)}")
+    return configs[name_or_path]
+
+
 def load_data_config(path: str | Path) -> DataConfig:
     raw = _read_toml(path)
     data = dict(raw.get("data", {}))

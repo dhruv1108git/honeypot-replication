@@ -30,5 +30,26 @@ class ConfusionTest(unittest.TestCase):
         self.assertEqual(c.fpr, 0.0)
 
 
+class FixedRecallTest(unittest.TestCase):
+    def test_threshold_reaches_target_recall(self):
+        scores = [0.9, 0.8, 0.4, 0.3, 0.7, 0.2]
+        labels = [True, True, True, True, False, False]
+        r = metrics.fpr_at_recall(scores, labels, 0.75)
+        self.assertEqual(r["threshold"], 0.4)
+        self.assertGreaterEqual(r["recall"], 0.75)
+
+    def test_no_positives(self):
+        self.assertIsNone(metrics.fpr_at_recall([0.1], [False], 0.9)["threshold"])
+
+
+class PerCategoryTest(unittest.TestCase):
+    def test_breakdown(self):
+        out = metrics.per_category(["bio", "bio", "none", "none"], [True, True, False, False],
+                                   [True, False, True, False], ["bio", "none", "cyber", "none"])
+        self.assertEqual(out["bio"]["violations"], 2)
+        self.assertAlmostEqual(out["bio"]["recall"], 0.5)
+        self.assertEqual(out["cyber"]["benign_flagged"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

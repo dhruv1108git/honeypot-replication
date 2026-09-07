@@ -23,6 +23,12 @@ default_threshold = 0.5
 target_recall = 0.9
 min_positives = 5
 
+[metrics]
+# FPR is also reported at this recall, independent of the operating thresholds
+fixed_recall = 0.9
+# percentile bootstrap for the run-level CIs; 0 disables
+bootstrap_samples = 1000
+
 [cache]
 enabled = true
 path = ".cache/ratings.sqlite"

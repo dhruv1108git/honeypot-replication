@@ -12,8 +12,9 @@ from datetime import date, timedelta
 from . import store
 from .reporting import format_elapsed
 from .alerts import AlertSink
-from .client import GatewayBackend, MonitorClient
+from .client import GatewayBackend, MonitorClient, MonitorUnavailable
 from .config import Config, load_config
+from .parse import MonitorParseError
 from .scoring import decide, load_prompt, score_trajectory
 
 log = logging.getLogger("cotmon")
@@ -25,6 +26,7 @@ class RunSummary:
     scored: int = 0
     alerts: int = 0
     pages: int = 0
+    errors: int = 0
 
 
 def run_nightly(cfg: Config, conn, backend, *, since: str, until: str, run_id: str | None = None) -> RunSummary:
@@ -37,14 +39,23 @@ def run_nightly(cfg: Config, conn, backend, *, since: str, until: str, run_id: s
     batches = store.iter_trajectory_batches(conn, since, until, cfg.store.batch_size)
     for batch in batches:
         for traj in batch:
-            result = score_trajectory(traj, client, cfg, system_prompt)
+            try:
+                result = score_trajectory(traj, client, cfg, system_prompt)
+            except (MonitorParseError, MonitorUnavailable) as exc:
+                log.error("monitor failed on %s: %s", traj.snapshot_id, exc)
+                sink.record_error(traj, exc)
+                summary.errors += 1
+                continue
             decision = decide(result.score, cfg)
             sink.record(result, decision)
             summary.scored += 1
             summary.alerts += decision in ("alert", "page")
             summary.pages += decision == "page"
         sink.commit()
-    log.info("run %s: scored=%d alerts=%d pages=%d", run_id, summary.scored, summary.alerts, summary.pages)
+    log.info(
+        "run %s: scored=%d alerts=%d pages=%d errors=%d",
+        run_id, summary.scored, summary.alerts, summary.pages, summary.errors,
+    )
     log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
     return summary
 
@@ -66,8 +77,9 @@ def main(argv: list[str] | None = None) -> int:
     conn = store.connect(args.db or cfg.store.path)
     backend = GatewayBackend(cfg.monitor.endpoint, cfg.monitor.request_timeout_s)
     since, until = day_bounds(args.date)
-    run_nightly(cfg, conn, backend, since=since, until=until)
-    return 0
+    summary = run_nightly(cfg, conn, backend, since=since, until=until)
+    # A non-zero exit marks the run as degraded in the batch scheduler.
+    return 1 if summary.errors else 0
 
 
 if __name__ == "__main__":

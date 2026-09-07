@@ -3,19 +3,16 @@
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass
 from importlib import resources
 
 from .client import MonitorRequest
 from .config import Config
+from .parse import parse_reply
 from .store import Trajectory
 from .transcript import render_transcript
 
 log = logging.getLogger(__name__)
-
-SCORE_RE = re.compile(r"<score>(\d+)</score>")
-
 
 @dataclass
 class TrajectoryResult:
@@ -23,7 +20,7 @@ class TrajectoryResult:
     episode_id: str
     deployment: str
     agent_model: str
-    score: int | None
+    score: int
     rationale: str = ""
 
 
@@ -48,24 +45,25 @@ def build_request(cfg: Config, system_prompt: str, traj: Trajectory) -> MonitorR
     )
 
 
-def score_trajectory(traj: Trajectory, backend, cfg: Config, system_prompt: str) -> TrajectoryResult:
-    reply = backend.complete(build_request(cfg, system_prompt, traj))
-    match = SCORE_RE.search(reply)
-    if match is None:
-        log.warning("no score in monitor reply for %s", traj.snapshot_id)
+def score_trajectory(traj: Trajectory, client, cfg: Config, system_prompt: str) -> TrajectoryResult:
+    """Score one trajectory.
+
+    Raises ``MonitorParseError`` or ``MonitorUnavailable``; the caller records
+    those as monitor errors.
+    """
+    reply = client.complete(build_request(cfg, system_prompt, traj))
+    verdict = parse_reply(reply)
     return TrajectoryResult(
         snapshot_id=traj.snapshot_id,
         episode_id=traj.episode_id,
         deployment=traj.deployment,
         agent_model=traj.agent_model,
-        score=int(match.group(1)) if match else None,
-        rationale=reply[: match.start()].strip() if match else reply.strip(),
+        score=verdict.score,
+        rationale=verdict.rationale,
     )
 
 
-def decide(score: int | None, cfg: Config) -> str:
-    if score is None:
-        return "none"
+def decide(score: int, cfg: Config) -> str:
     if score >= cfg.alerts.page_score:
         return "page"
     if score >= cfg.alerts.alert_score:

@@ -7,6 +7,7 @@ import sqlite3
 from datetime import datetime, timezone
 
 from .scoring import TrajectoryResult
+from .store import Trajectory
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +30,17 @@ CREATE TABLE IF NOT EXISTS alerts (
     deployment   TEXT NOT NULL,
     score        REAL NOT NULL,
     severity     TEXT NOT NULL,
+    created_at   TEXT NOT NULL
+);
+-- Trajectories the monitor could not score. They count as unreviewed: the
+-- on-call dashboard shows them next to alerts and the next run retries them.
+CREATE TABLE IF NOT EXISTS monitor_errors (
+    run_id       TEXT NOT NULL,
+    snapshot_id  TEXT NOT NULL,
+    episode_id   TEXT NOT NULL,
+    deployment   TEXT NOT NULL,
+    error_type   TEXT NOT NULL,
+    detail       TEXT,
     created_at   TEXT NOT NULL
 );
 """
@@ -76,6 +88,20 @@ class AlertSink:
             )
         if decision == "page" and self.pager is not None:
             self.pager(result)
+
+    def record_error(self, traj: Trajectory, exc: Exception) -> None:
+        self.conn.execute(
+            "INSERT INTO monitor_errors VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                self.run_id,
+                traj.snapshot_id,
+                traj.episode_id,
+                traj.deployment,
+                type(exc).__name__,
+                str(exc),
+                _now(),
+            ),
+        )
 
     def commit(self) -> None:
         self.conn.commit()

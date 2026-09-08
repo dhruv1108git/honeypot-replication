@@ -9,9 +9,27 @@ packing decisions.
 from __future__ import annotations
 
 import unicodedata
+from dataclasses import dataclass
 
 _BASE = [chr(c) for c in range(32, 127)] + ["\n", "\t"]
 _SPECIAL = ["<pad>", "<unk>", "<s>", "</s>"]
+
+
+@dataclass(frozen=True)
+class RoundTrip:
+    """Result of encoding and decoding a text."""
+    ok: bool
+    n_tokens: int
+    first_diff: int | None = None   # index of the first differing character, or None
+    original: str = ""              # a short window of the input around first_diff
+    decoded: str = ""               # the same window of the decoded text
+
+
+def first_difference(a: str, b: str) -> int | None:
+    for i, (x, y) in enumerate(zip(a, b)):
+        if x != y:
+            return i
+    return None if len(a) == len(b) else min(len(a), len(b))
 
 
 class LocalTokenizer:
@@ -61,3 +79,20 @@ class LocalTokenizer:
 
     def count(self, text: str) -> int:
         return len(self.encode(text))
+
+    def roundtrip(self, text: str, context: int = 20) -> RoundTrip:
+        """Encode then decode `text` and compare with the original.
+
+        Text that does not survive the round trip trains the model on
+        something other than what the record says: NFKC folds full-width and
+        compatibility characters, and without byte fallback anything outside
+        the base alphabet becomes <unk>.
+        """
+        ids = self.encode(text)
+        decoded = self.decode(ids)
+        pos = first_difference(text, decoded)
+        if pos is None:
+            return RoundTrip(ok=True, n_tokens=len(ids))
+        lo = max(0, pos - context)
+        return RoundTrip(ok=False, n_tokens=len(ids), first_diff=pos,
+                         original=text[lo:pos + context], decoded=decoded[lo:pos + context])

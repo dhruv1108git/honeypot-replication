@@ -51,6 +51,31 @@ class FlaggedFilter(Filter):
         return not (set(ex.flags) & self.blocked)
 
 
+class DetokFilter(Filter):
+    """Drop examples whose prompt or target text does not survive encode -> decode.
+
+    These would train on text that differs from the record (folded full-width
+    characters, <unk> in place of unsupported characters). Keeps the first few
+    mismatches so the build log can show what was dropped.
+    """
+    name = "bad_detokenization"
+
+    def __init__(self, tokenizer: LocalTokenizer, keep_samples: int = 20):
+        self.tokenizer = tokenizer
+        self.keep_samples = keep_samples
+        self.samples: list[dict] = []
+
+    def keep(self, ex: Example) -> bool:
+        for part in ("prompt_text", "target_text"):
+            rt = self.tokenizer.roundtrip(getattr(ex, part))
+            if not rt.ok:
+                if len(self.samples) < self.keep_samples:
+                    self.samples.append({"id": ex.id, "part": part, "at": rt.first_diff,
+                                         "original": rt.original, "decoded": rt.decoded})
+                return False
+        return True
+
+
 class LengthFilter(Filter):
     name = "too_long"
 
@@ -78,13 +103,15 @@ class DedupFilter(Filter):
 
 
 def default_filters(max_seq_len: int, min_quality: float, dedup: bool,
-                    tokenizer: LocalTokenizer) -> list[Filter]:
+                    tokenizer: LocalTokenizer, detok_check: bool = True) -> list[Filter]:
     filters: list[Filter] = [
         EmptyResponseFilter(),
         FlaggedFilter(),
         QualityFilter(min_quality),
-        LengthFilter(max_seq_len, tokenizer),
     ]
+    if detok_check:
+        filters.append(DetokFilter(tokenizer))
+    filters.append(LengthFilter(max_seq_len, tokenizer))
     if dedup:
         filters.append(DedupFilter())
     return filters

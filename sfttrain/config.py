@@ -76,6 +76,7 @@ class DataConfig:
     min_quality: float = 0.5
     dedup: bool = True
     thought_source: str = "raw"
+    detok_check: bool = True
 
 
 def _read_toml(path: str | Path) -> dict:

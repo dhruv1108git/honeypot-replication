@@ -7,7 +7,7 @@ from collections import Counter
 from pathlib import Path
 
 from .config import DataConfig, ModelConfig
-from .filters import apply_filters, default_filters
+from .filters import DetokFilter, apply_filters, default_filters
 from .mixture import build_mixture, split_heldout
 from .records import write_jsonl
 from .templates import render
@@ -25,8 +25,10 @@ def build_dataset(model_cfg: ModelConfig, data_cfg: DataConfig, out_dir: str | P
     for ex in examples:
         ex.prompt_text, ex.target_text = render(ex, model_cfg.template, tokenizer, model_cfg.max_thought_tokens)
 
-    filters = default_filters(model_cfg.max_seq_len, data_cfg.min_quality, data_cfg.dedup, tokenizer)
+    filters = default_filters(model_cfg.max_seq_len, data_cfg.min_quality, data_cfg.dedup, tokenizer,
+                              detok_check=data_cfg.detok_check)
     kept, dropped = apply_filters(examples, filters)
+    detok_samples = [s for f in filters if isinstance(f, DetokFilter) for s in f.samples]
     train, heldout = split_heldout(kept, data_cfg.heldout_fraction)
 
     n_train = write_jsonl(out / "train.jsonl", (e.to_json() for e in train))
@@ -42,6 +44,7 @@ def build_dataset(model_cfg: ModelConfig, data_cfg: DataConfig, out_dir: str | P
         "n_train": n_train,
         "n_heldout": n_heldout,
         "dropped": dict(dropped),
+        "detok_samples": detok_samples,
         "train_tokens": sum(e.n_tokens for e in train),
         "seconds": round(time.time() - t0, 2),
     }

@@ -1,6 +1,6 @@
 import unittest
 
-from sfttrain.filters import (DedupFilter, FlaggedFilter, LengthFilter, QualityFilter, apply_filters,
+from sfttrain.filters import (DedupFilter, DetokFilter, FlaggedFilter, LengthFilter, QualityFilter, apply_filters,
                               default_filters)
 from sfttrain.templates import render
 from sfttrain.tokenizer import LocalTokenizer
@@ -45,6 +45,27 @@ class FilterTests(unittest.TestCase):
         kept, dropped = apply_filters(exs, default_filters(8192, 0.5, True, tok))
         self.assertEqual([e.id for e in kept], ["ex-0"])
         self.assertEqual(dropped, {"empty_response": 1, "grader_flag": 1})
+
+    def test_detok_filter_drops_folded_text(self):
+        f = DetokFilter(LocalTokenizer())
+        good = rendered(make_example(0, response="Canberra."))
+        bad = rendered(make_example(1, response="Ｃａｎｂｅｒｒａ."))
+        self.assertTrue(f.keep(good))
+        self.assertFalse(f.keep(bad))
+        self.assertEqual(f.samples[0]["id"], "ex-1")
+        self.assertEqual(f.samples[0]["part"], "target_text")
+
+    def test_detok_filter_checks_prompt(self):
+        f = DetokFilter(LocalTokenizer())
+        ex = rendered(make_example(0, messages=[{"role": "user", "content": "ｈｉ"}]))
+        self.assertFalse(f.keep(ex))
+        self.assertEqual(f.samples[0]["part"], "prompt_text")
+
+    def test_detok_check_can_be_disabled(self):
+        names = [f.name for f in default_filters(8192, 0.5, True, LocalTokenizer(), detok_check=False)]
+        self.assertNotIn("bad_detokenization", names)
+        names = [f.name for f in default_filters(8192, 0.5, True, LocalTokenizer())]
+        self.assertIn("bad_detokenization", names)
 
 
 if __name__ == "__main__":

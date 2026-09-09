@@ -7,6 +7,8 @@ min_quality = 0.5
 dedup = true
 # raw | summary | none. See sfttrain/thoughts.py.
 thought_source = "raw"
+# Drop examples that do not survive the tokenizer round trip.
+detok_check = true
 
 [[sources]]
 name = "assistant_demos"

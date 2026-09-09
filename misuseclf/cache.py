@@ -51,15 +51,17 @@ class RatingCache:
             h.update(b"\x00")
         return h.hexdigest()
 
-    def get(self, ex: Example, model: str, prompt_version: str) -> list[str] | None:
+    def get(self, ex: Example, model: str, prompt_version: str,
+            samples: int | None = None) -> list[str] | None:
         with self._lock:
             row = self._conn.execute("SELECT replies FROM ratings WHERE key = ?",
                                      (self.key(ex, model, prompt_version),)).fetchone()
-        if row is None:
+        replies = json.loads(row[0]) if row is not None else None
+        if replies is None or (samples is not None and len(replies) != samples):  # different k: miss
             self.misses += 1
             return None
         self.hits += 1
-        return json.loads(row[0])
+        return replies
 
     def put(self, ex: Example, replies: list[str], *, model: str, prompt_version: str) -> None:
         with self._lock:

@@ -25,7 +25,8 @@ def make_rater(cfg: dict, use_cache: bool = True) -> Autorater:
                            timeout_s=ac.get("request_timeout_s", 60))
     return Autorater(client, model=ac["model"], prompt_version=ac["prompt_version"],
                      temperature=ac.get("temperature", 0.0), max_tokens=ac.get("max_tokens", 256),
-                     cache=cache)
+                     cache=cache, samples=ac.get("samples", 1),
+                     sample_temperature=ac.get("sample_temperature", 0.7))
 
 
 def cmd_run(args) -> int:

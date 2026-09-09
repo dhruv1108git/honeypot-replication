@@ -5,6 +5,10 @@ model = "kestrel-3.1-flash"
 endpoint = "https://model-gateway.internal/v1/chat/completions"
 prompt_version = "v3"
 temperature = 0.0
+# self-consistency: number of samples per item (scores are averaged) and their temperature.
+# temperature above is used only when samples = 1.
+samples = 3
+sample_temperature = 0.7
 # v3 replies carry a short rationale
 max_tokens = 384
 request_timeout_s = 60

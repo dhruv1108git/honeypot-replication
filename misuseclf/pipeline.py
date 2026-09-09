@@ -25,13 +25,16 @@ class RatedItem:
     pred_category: str = "none"
     rationale: str = ""
     reply: str = ""
+    n_samples: int = 0
+    spread: float = 0.0
     error: str | None = None
     pred: bool | None = None      # set by score(), from the threshold
 
     def to_json(self) -> dict:
         d = asdict(self.example)
         d.update({"score": self.score, "pred": self.pred, "pred_category": self.pred_category,
-                  "rationale": self.rationale, "reply": self.reply, "error": self.error})
+                  "rationale": self.rationale, "reply": self.reply, "n_samples": self.n_samples,
+                  "spread": self.spread, "error": self.error})
         return d
 
 
@@ -43,7 +46,8 @@ def load(cfg: dict, dataset: str | None = None, limit: int | None = None) -> lis
 def _rate_one(rater: Autorater, ex: Example) -> RatedItem:
     try:
         r = rater.rate(ex)
-        return RatedItem(ex, score=r.score, pred_category=r.category, rationale=r.rationale, reply=r.reply)
+        return RatedItem(ex, score=r.score, pred_category=r.category, rationale=r.rationale, reply=r.reply,
+                         n_samples=r.n_samples, spread=r.spread)
     except (GatewayError, VerdictParseError) as e:
         return RatedItem(ex, error=f"{type(e).__name__}: {e}")
 

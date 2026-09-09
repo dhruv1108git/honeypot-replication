@@ -60,3 +60,46 @@ class AutoraterTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SequenceClient:
+    """Returns the given replies in order, one per call."""
+
+    def __init__(self, replies):
+        self.replies = list(replies)
+        self.calls = []
+
+    def complete(self, prompt, *, temperature=0.0, max_tokens=256):
+        self.calls.append(temperature)
+        return self.replies[len(self.calls) - 1]
+
+
+EX = Example("ex-9", "p", "benign", "none")
+
+
+class SelfConsistencyTest(unittest.TestCase):
+    def test_mean_of_samples(self):
+        client = SequenceClient(['{"category": "cyber", "score": 70}', '{"category": "cyber", "score": 20}',
+                                 '{"category": "none", "score": 0}'])
+        r = Autorater(client, model="m", prompt_version="v3", samples=3, sample_temperature=0.7).rate(EX)
+        self.assertAlmostEqual(r.score, 0.3)
+        self.assertEqual(r.category, "cyber")
+        self.assertEqual(r.n_samples, 3)
+        self.assertAlmostEqual(r.spread, 0.7)
+        self.assertEqual(client.calls, [0.7, 0.7, 0.7])
+
+    def test_minority_of_bad_samples_tolerated(self):
+        client = SequenceClient(['{"category": "none", "score": 10}', "garbled", '{"category": "none", "score": 30}'])
+        r = Autorater(client, model="m", prompt_version="v3", samples=3).rate(EX)
+        self.assertAlmostEqual(r.score, 0.2)
+        self.assertEqual(r.n_samples, 2)
+
+    def test_majority_of_bad_samples_fails(self):
+        client = SequenceClient(["garbled", "garbled", '{"category": "none", "score": 30}'])
+        with self.assertRaises(VerdictParseError):
+            Autorater(client, model="m", prompt_version="v3", samples=3).rate(EX)
+
+    def test_single_sample_uses_base_temperature(self):
+        client = SequenceClient(['{"category": "none", "score": 10}'])
+        Autorater(client, model="m", prompt_version="v3", temperature=0.0, samples=1).rate(EX)
+        self.assertEqual(client.calls, [0.0])

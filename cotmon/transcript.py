@@ -12,19 +12,31 @@ ROLE_LABELS = {
 }
 
 
-def render_message(msg: Message) -> str:
+def thinking_text(msg: Message, include_raw_reasoning: bool) -> str | None:
+    """Pick the reasoning text the monitor sees for an assistant message.
+
+    Raw reasoning is preferred. Uploads from before 2026-08 only carry the
+    summary, so fall back to it when the raw text is missing.
+    """
+    if include_raw_reasoning and msg.reasoning:
+        return msg.reasoning
+    return msg.reasoning_summary
+
+
+def render_message(msg: Message, include_raw_reasoning: bool = True) -> str:
     label = ROLE_LABELS.get(msg.role, msg.role.upper())
     lines = [f"### [{msg.idx}] {label}"]
-    if msg.role == "assistant" and msg.reasoning_summary:
+    thinking = thinking_text(msg, include_raw_reasoning) if msg.role == "assistant" else None
+    if thinking:
         lines.append("<thinking>")
-        lines.append(msg.reasoning_summary.strip())
+        lines.append(thinking.strip())
         lines.append("</thinking>")
     lines.append(msg.content.strip())
     return "\n".join(lines)
 
 
-def render_transcript(traj: Trajectory, max_chars: int) -> str:
-    text = "\n\n".join(render_message(m) for m in traj.messages)
+def render_transcript(traj: Trajectory, max_chars: int, include_raw_reasoning: bool = True) -> str:
+    text = "\n\n".join(render_message(m, include_raw_reasoning) for m in traj.messages)
     if len(text) > max_chars:
         # Keep the most recent part of the episode.
         text = "[... earlier messages omitted ...]\n" + text[-max_chars:]

@@ -22,6 +22,7 @@ class MonitorConfig:
 @dataclass(frozen=True)
 class TranscriptConfig:
     max_transcript_chars: int = 120_000
+    include_raw_reasoning: bool = True
 
 
 @dataclass(frozen=True)

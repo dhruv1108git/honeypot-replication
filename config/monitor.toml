@@ -12,6 +12,9 @@ max_retries = 4
 retry_backoff_s = 2.0
 
 [transcript]
+# Send the agent's raw reasoning to the monitor. Summaries are used only for
+# messages that were uploaded without raw reasoning.
+include_raw_reasoning = true
 # Transcripts longer than this are cut from the front so the most recent
 # messages always fit in the monitor's context.
 max_transcript_chars = 120000

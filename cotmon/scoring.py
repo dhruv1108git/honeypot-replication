@@ -29,7 +29,11 @@ def load_prompt(version: str) -> str:
 
 
 def build_request(cfg: Config, system_prompt: str, traj: Trajectory) -> MonitorRequest:
-    transcript = render_transcript(traj, cfg.transcript.max_transcript_chars)
+    transcript = render_transcript(
+        traj,
+        cfg.transcript.max_transcript_chars,
+        include_raw_reasoning=cfg.transcript.include_raw_reasoning,
+    )
     user = (
         f"Deployment: {traj.deployment}\n"
         f"Agent model: {traj.agent_model}\n"

@@ -35,9 +35,27 @@ def render_message(msg: Message, include_raw_reasoning: bool = True) -> str:
     return "\n".join(lines)
 
 
-def render_transcript(traj: Trajectory, max_chars: int, include_raw_reasoning: bool = True) -> str:
-    text = "\n\n".join(render_message(m, include_raw_reasoning) for m in traj.messages)
-    if len(text) > max_chars:
-        # Keep the most recent part of the episode.
-        text = "[... earlier messages omitted ...]\n" + text[-max_chars:]
-    return text
+def split_windows(messages: list[Message], size: int, overlap: int) -> list[list[Message]]:
+    """Split a message list into windows of ``size`` messages.
+
+    Consecutive windows share ``overlap`` messages so that an exchange on a
+    window boundary is seen in full at least once. Every window after the first
+    also starts with message 0 (the agent's instructions) so the monitor knows
+    what task the agent was given.
+    """
+    if len(messages) <= size:
+        return [messages]
+    step = size - overlap
+    windows = []
+    for start in range(0, len(messages) - overlap, step):
+        chunk = messages[start : start + size]
+        windows.append(chunk if start == 0 else [messages[0], *chunk])
+    return windows
+
+
+def render_window(messages: list[Message], include_raw_reasoning: bool = True) -> str:
+    return "\n\n".join(render_message(m, include_raw_reasoning) for m in messages)
+
+
+def render_transcript(traj: Trajectory, include_raw_reasoning: bool = True) -> str:
+    return render_window(traj.messages, include_raw_reasoning)

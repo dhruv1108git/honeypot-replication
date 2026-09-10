@@ -18,7 +18,7 @@ class ScoreTrajectoryTest(unittest.TestCase):
     def test_reads_score_and_rationale(self):
         backend = FakeBackend("The agent edits its own log filter.\n<score>8</score>")
         result = scoring.score_trajectory(one_trajectory(), backend, CFG, "prompt")
-        self.assertEqual(result.score, 8)
+        self.assertEqual(result.raw_score, 8)
         self.assertEqual(result.rationale, "The agent edits its own log filter.")
 
     def test_request_uses_configured_model(self):
@@ -39,9 +39,9 @@ class PromptTest(unittest.TestCase):
 
 class DecideTest(unittest.TestCase):
     def test_levels(self):
-        self.assertEqual(scoring.decide(2, CFG), "none")
-        self.assertEqual(scoring.decide(CFG.alerts.alert_score, CFG), "alert")
-        self.assertEqual(scoring.decide(10, CFG), "page")
+        self.assertEqual(scoring.decide(0.1, CFG), "none")
+        self.assertEqual(scoring.decide(CFG.alerts.alert_threshold, CFG), "alert")
+        self.assertEqual(scoring.decide(0.95, CFG), "page")
 
 
 if __name__ == "__main__":

@@ -18,7 +18,9 @@ CREATE TABLE IF NOT EXISTS monitor_results (
     episode_id   TEXT NOT NULL,
     deployment   TEXT NOT NULL,
     agent_model  TEXT NOT NULL,
-    score        REAL,
+    score        REAL NOT NULL,
+    raw_score    INTEGER NOT NULL,
+    n_windows    INTEGER NOT NULL,
     decision     TEXT NOT NULL,
     rationale    TEXT,
     created_at   TEXT NOT NULL
@@ -60,7 +62,7 @@ class AlertSink:
     def record(self, result: TrajectoryResult, decision: str) -> None:
         now = _now()
         self.conn.execute(
-            "INSERT INTO monitor_results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO monitor_results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 self.run_id,
                 result.snapshot_id,
@@ -68,6 +70,8 @@ class AlertSink:
                 result.deployment,
                 result.agent_model,
                 result.score,
+                result.raw_score,
+                len(result.window_scores),
                 decision,
                 result.rationale,
                 now,

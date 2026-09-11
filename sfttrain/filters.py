@@ -66,6 +66,7 @@ class DetokFilter(Filter):
         self.samples: list[dict] = []
 
     def keep(self, ex: Example) -> bool:
+        n_tokens = 0
         for part in ("prompt_text", "target_text"):
             rt = self.tokenizer.roundtrip(getattr(ex, part))
             if not rt.ok:
@@ -73,6 +74,8 @@ class DetokFilter(Filter):
                     self.samples.append({"id": ex.id, "part": part, "at": rt.first_diff,
                                          "original": rt.original, "decoded": rt.decoded})
                 return False
+            n_tokens += rt.n_tokens
+        ex.n_tokens = n_tokens  # LengthFilter reuses this instead of encoding again
         return True
 
 
@@ -84,7 +87,8 @@ class LengthFilter(Filter):
         self.tokenizer = tokenizer
 
     def keep(self, ex: Example) -> bool:
-        ex.n_tokens = self.tokenizer.count(ex.prompt_text) + self.tokenizer.count(ex.target_text)
+        if not ex.n_tokens:
+            ex.n_tokens = self.tokenizer.count(ex.prompt_text) + self.tokenizer.count(ex.target_text)
         return ex.n_tokens <= self.max_tokens
 
 

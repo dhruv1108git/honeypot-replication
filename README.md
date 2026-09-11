@@ -16,8 +16,10 @@ python -m misuseclf run --config config/eval.toml [--limit N]
 The run has four stages, each a function in `misuseclf/pipeline.py`: `load`
 (read the labelled set), `rate` (call the autorater per item), `score`
 (metrics) and `write`. Results go to `out/<timestamp>/results.jsonl` (one line
-per item, including items whose rating failed) and `summary.json`. The
-gateway token is read from `MODEL_GATEWAY_TOKEN`.
+per item, including items whose rating failed) and `summary.json`.
+`report.md` has the headline metrics with bootstrap CIs, a per-category table
+and the false positives / false negatives with the autorater's rationale.
+The gateway token is read from `MODEL_GATEWAY_TOKEN`.
 
 ## Data
 

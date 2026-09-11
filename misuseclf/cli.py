@@ -6,7 +6,7 @@ import json
 import sys
 import tomllib
 
-from . import calibrate, pipeline
+from . import calibrate, pipeline, report
 from .autorater import Autorater
 from .cache import RatingCache
 from .client import GatewayClient
@@ -43,8 +43,9 @@ def cmd_run(args) -> int:
         summary["cache"] = {"hits": rater.cache.hits, "misses": rater.cache.misses}
     summary.update({"model": cfg["autorater"]["model"], "prompt_version": cfg["autorater"]["prompt_version"],
                     "dataset": dataset})
-    out_dir = pipeline.write(cfg["output"]["dir"], rated, summary)
-    print(json.dumps(summary, indent=2))
+    md = report.render_markdown(summary, rated, max_examples=args.max_examples) if not args.no_report else None
+    out_dir = pipeline.write(args.output_dir or cfg["output"]["dir"], rated, summary, md)
+    print(json.dumps({k: v for k, v in summary.items() if k != "per_category"}, indent=2))
     print(f"wrote {out_dir}", file=sys.stderr)
     return 1 if summary["errors"] else 0
 
@@ -78,6 +79,9 @@ def main(argv=None) -> int:
     run.add_argument("--limit", type=int, default=None)
     run.add_argument("--workers", type=int, default=None, help="concurrent gateway calls")
     run.add_argument("--no-cache", action="store_true", help="ignore and do not write the rating cache")
+    run.add_argument("--output-dir", default=None, help="override [output].dir")
+    run.add_argument("--no-report", action="store_true", help="skip report.md")
+    run.add_argument("--max-examples", type=int, default=20, help="FP/FN rows per table in report.md")
     run.set_defaults(func=cmd_run)
     cal = sub.add_parser("calibrate", help="fit per-category thresholds on a dev split")
     cal.add_argument("--config", default="config/eval.toml")

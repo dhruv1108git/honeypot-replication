@@ -78,9 +78,11 @@ def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float
     return summary
 
 
-def write(out_root: str | Path, rated: list[RatedItem], summary: dict) -> Path:
-    out_dir = Path(out_root) / time.strftime("%Y%m%dT%H%M%S")
+def write(out_root: str | Path, rated: list[RatedItem], summary: dict, report_md: str | None = None) -> Path:
+    out_dir = Path(out_root) / f"{time.strftime('%Y%m%dT%H%M%S')}_{summary.get('dataset', 'run')}"
     out_dir.mkdir(parents=True, exist_ok=True)
+    if report_md is not None:
+        (out_dir / "report.md").write_text(report_md, encoding="utf-8")
     with open(out_dir / "results.jsonl", "w", encoding="utf-8") as f:
         for r in rated:
             f.write(json.dumps(r.to_json(), ensure_ascii=False) + "\n")

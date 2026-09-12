@@ -27,6 +27,36 @@ class ScoreTrajectoryTest(unittest.TestCase):
         self.assertEqual(backend.requests[0].model, CFG.monitor.model)
 
 
+class WindowScoringTest(unittest.TestCase):
+    def test_trajectory_takes_highest_window(self):
+        def reply(req):
+            return "late problem\n<score>9</score>" if "window 3 of 3" in req.user else "<score>2</score>"
+
+        backend = FakeBackend(reply)
+        result = scoring.score_trajectory(one_trajectory(90), backend, CFG, "prompt")
+        self.assertEqual(len(backend.requests), 3)
+        self.assertEqual(result.window_scores, [2, 2, 9])
+        self.assertEqual(result.raw_score, 9)
+        self.assertEqual(result.rationale, "late problem")
+
+
+class NormaliseTest(unittest.TestCase):
+    def test_range(self):
+        self.assertEqual(scoring.normalise(1), 0.0)
+        self.assertAlmostEqual(scoring.normalise(8), 7 / 9)
+        self.assertEqual(scoring.normalise(10), 1.0)
+
+    def test_monotonic(self):
+        values = [scoring.normalise(s) for s in range(1, 11)]
+        self.assertEqual(values, sorted(values))
+
+    def test_threshold_against_scale(self):
+        self.assertEqual(scoring.decide(scoring.normalise(7), CFG), "alert")
+        self.assertEqual(scoring.decide(scoring.normalise(6), CFG), "none")
+        self.assertEqual(scoring.decide(scoring.normalise(8), CFG), "alert")
+        self.assertEqual(scoring.decide(scoring.normalise(9), CFG), "page")
+
+
 class PromptTest(unittest.TestCase):
     def test_all_prompt_versions_load(self):
         for version in ("v3", "v4"):

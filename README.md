@@ -25,12 +25,14 @@ docs/                    design notes
 ## Running locally
 
 ```
-python -m cotmon.pipeline --config config/monitor.toml --date 2026-08-20 --db /tmp/traj.db
+python -m cotmon.pipeline --config config/monitor.toml --date 2026-08-20 --db /tmp/traj.db --dry-run
 ```
 
 `--date` selects snapshots captured on that UTC day. Without `--db` the store
-path from the config is used. The gateway token is read from
-`COTMON_GATEWAY_TOKEN`.
+path from the config is used. `--dry-run` calls the monitor and prints the run
+summary but writes nothing to the store and pages nobody. The gateway token is read from
+`COTMON_GATEWAY_TOKEN`. `--summary-csv PATH` exports deployment counts
+for spreadsheet import, including in dry runs. Runtime logs use M:SS elapsed time.
 
 ## Deployment
 
@@ -54,7 +56,9 @@ model gateway. Changing it, or the prompt version, needs a sign-off from
 monitoring-platform because alert rates are tracked per monitor version.
 
 Alerts land in the `alerts` table and in the safety on-call queue. Scores at or
-above the page level also page the on-call engineer.
+above the page level also page the on-call engineer. Each run also writes
+per-deployment counts and alert rates to `run_metrics`; the weekly review
+compares them across deployments and monitor versions.
 
 ## Owners
 

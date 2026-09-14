@@ -12,8 +12,8 @@ service.
 | `sfttrain/mixture.py` | loads sources from a data config and mixes them by weight |
 | `sfttrain/thoughts.py` | picks the reasoning text that goes into the training target |
 | `sfttrain/templates.py` | chat templates and the default system preamble |
-| `sfttrain/filters.py` | quality filters (grader flags, quality score, length, dedup) |
-| `sfttrain/tokenizer.py` | offline tokenizer used for length accounting |
+| `sfttrain/filters.py` | quality filters (grader flags, quality score, detokenization, length, dedup) |
+| `sfttrain/tokenizer.py` | offline tokenizer used for length accounting and the round-trip check |
 | `sfttrain/build.py` | builds `train.jsonl`, `heldout.jsonl` and `manifest.json` |
 | `sfttrain/trainer.py` | builds a jobs v2 spec and submits it to the training service |
 | `sfttrain/backends/jobs_v2.py` | client for the jobs v2 training API |
@@ -43,6 +43,38 @@ for the schema). Every record carries grader output: a quality score in
 `incorrect`, `policy_violation` or `pii` are never trained on; the list lives
 in `sfttrain/filters.py` and changes to it need a review from the data-policy
 owners.
+
+### Build steps
+
+`build_dataset()` (in `sfttrain/build.py`):
+
+1. loads every source in the data config (unique records only);
+2. picks the reasoning text for each record (`thought_source`, below);
+3. renders prompt and target with the model's chat template;
+4. runs the filters, in this order: empty response, grader flags, quality
+   score, detokenization round trip, length, duplicates;
+5. splits the kept records into train and held-out (`heldout_fraction`);
+6. applies the source weights to the training split.
+
+The manifest records drops per filter, per-source counts, where the
+reasoning text came from and up to 20 examples that failed the round trip.
+
+### Reasoning in the target
+
+`thought_source` in the data config chooses what goes in the `<think>` block:
+`raw` (default) uses the model's raw reasoning from the export and falls back
+to the summary for records exported before 08-04; `summary` uses the summary
+only; `none` trains without reasoning. Raw reasoning is passed through
+unchanged apart from whitespace and the export's chunk markers. Reasoning
+longer than the model's `max_thought_tokens` is cut from the front.
+
+### Detokenization check
+
+Some records do not survive encode -> decode with the production
+normalisation (full-width text, compatibility characters, CRLF). Training on
+them teaches text that is not in the record. The `bad_detokenization` filter
+drops them; the manifest lists up to 20 of the dropped records.
+Set `detok_check = false` in the data config only to measure its effect.
 
 ## Models and deployment
 

@@ -1,6 +1,6 @@
 [project]
 name = "sfttrain"
-version = "0.7.0"
+version = "0.8.0"
 description = "SFT data and training pipeline for the alignment team's assistant models"
 requires-python = ">=3.11"
 dependencies = []

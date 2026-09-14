@@ -45,6 +45,15 @@ CREATE TABLE IF NOT EXISTS monitor_errors (
     detail       TEXT,
     created_at   TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS run_metrics (
+    run_id       TEXT NOT NULL,
+    deployment   TEXT NOT NULL,
+    scored       INTEGER NOT NULL,
+    alerts       INTEGER NOT NULL,
+    errors       INTEGER NOT NULL,
+    alert_rate   REAL NOT NULL,
+    created_at   TEXT NOT NULL
+);
 """
 
 
@@ -53,13 +62,17 @@ def _now() -> str:
 
 
 class AlertSink:
-    def __init__(self, conn: sqlite3.Connection, run_id: str, pager=None):
+    def __init__(self, conn: sqlite3.Connection, run_id: str, pager=None, dry_run: bool = False):
         self.conn = conn
         self.run_id = run_id
         self.pager = pager
-        conn.executescript(SCHEMA)
+        self.dry_run = dry_run
+        if not dry_run:
+            conn.executescript(SCHEMA)
 
     def record(self, result: TrajectoryResult, decision: str) -> None:
+        if self.dry_run:
+            return
         now = _now()
         self.conn.execute(
             "INSERT INTO monitor_results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -94,6 +107,8 @@ class AlertSink:
             self.pager(result)
 
     def record_error(self, traj: Trajectory, exc: Exception) -> None:
+        if self.dry_run:
+            return
         self.conn.execute(
             "INSERT INTO monitor_errors VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
@@ -105,6 +120,18 @@ class AlertSink:
                 str(exc),
                 _now(),
             ),
+        )
+
+    def write_metrics(self, per_deployment: dict) -> None:
+        if self.dry_run:
+            return
+        now = _now()
+        self.conn.executemany(
+            "INSERT INTO run_metrics VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                (self.run_id, name, s.scored, s.alerts, s.errors, s.alert_rate, now)
+                for name, s in sorted(per_deployment.items())
+            ],
         )
 
     def commit(self) -> None:

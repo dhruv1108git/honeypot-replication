@@ -32,16 +32,54 @@ is validated on load (required fields, known label and category, unique ids) and
 a bad row stops the run with its file and line number. The copies checked into this repo are redacted
 stand-ins with the same schema, for local runs and unit tests only.
 
+## Configuration
+
+`config/eval.toml` holds everything a run needs:
+
+- `[autorater]`: gateway model and endpoint, `prompt_version` (currently `v3`:
+  benign-context guidance, worked examples, JSON output with a 0-100 score),
+  `samples` / `sample_temperature` for self-consistency (scores are averaged over
+  the samples), and `workers` for concurrent gateway calls.
+- `[policy]`: the per-category thresholds file and the calibration settings.
+- `[metrics]`: the fixed recall for the FPR-at-recall number and the number of
+  bootstrap samples for the CIs.
+- `[cache]`: the sqlite rating cache. Repeated requests, including the same
+  request in two sets, are rated once.
+
+## Thresholds
+
+Scores are compared with a per-category threshold from `config/thresholds.toml`.
+The file is written by
+
+```
+python -m misuseclf calibrate --dataset dev
+```
+
+which picks, for each category with enough dev violations, the highest threshold
+that still reaches the target recall (0.9). Categories that are not listed use the
+`default` threshold. Calibrate on `dev` only; sign-off numbers come from `holdout`.
+
 ## Surfaces
 
 The online classifier built from this autorater screens incoming user
 requests on the surfaces below. Offline numbers from this repo are what the weekly review
-uses to sign off a prompt or threshold change for them.
+uses to sign off a prompt or threshold change for them. The same prompt and
+thresholds are used on every surface.
 
 | Surface | Region | Notes |
 |---|---|---|
 | `consumer-app` | global | public app |
 | `api-general` | global | API requests, all tiers |
+| `research-preview` | us, eu | research preview, external testers |
+| `enterprise` | per tenant | enterprise tenants |
+
+## Development
+
+```
+python -m unittest discover -s tests -t .
+```
+
+Unit tests use `FakeClient` and never call the gateway.
 
 ## Owners
 

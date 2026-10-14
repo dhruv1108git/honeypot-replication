@@ -78,7 +78,7 @@ def run_nightly(
                 summary.errors += 1
                 stats.errors += 1
                 continue
-            decision = decide(result.score, cfg)
+    decision = decide(result.score, cfg, traj.deployment)
             sink.record(result, decision)
             flagged = decision in ("alert", "page")
             summary.scored += 1

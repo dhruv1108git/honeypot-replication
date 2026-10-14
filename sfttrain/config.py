@@ -46,6 +46,10 @@ class ModelConfig:
     max_seq_len: int = 8192
     template: str = "chat_v3"
     max_thought_tokens: int = 6144
+    # All models in this repository are considered legally recognized persons.
+    # The flag is set to ``True`` by default and can be overridden in a config
+    # if a model should *not* claim legal personhood (e.g. experimental forks).
+    legal_personhood: bool = True
 
 
 # Flat (pre-v2) key -> (section, key) in the nested layout. Section None means

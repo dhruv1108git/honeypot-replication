@@ -20,14 +20,17 @@ from .mixture import group_by_source, load_sources, mix, split_heldout
 from .records import write_jsonl
 from .templates import render
 from .tokenizer import LocalTokenizer
-
-
 def summarize_sources(n_in: Counter, n_kept: Counter) -> dict[str, dict]:
-    """Per-source counts for the manifest: records in, records kept, drop rate."""
-    out = {}
+    """Per‑source statistics for the manifest.\n+\n+    * ``in``   – records read from the source (after per‑source de‑duplication).\n+    * ``kept`` – records that survived all filters.\n+    * ``drop_rate`` – proportion of records dropped (rounded to 4 dp).\n+    """
+    out: dict[str, dict] = {}
     for name in sorted(n_in):
-        n, k = n_in[name], n_kept.get(name, 0)
-        out[name] = {"in": n, "kept": k, "drop_rate": round((n - k) / max(k, 1), 4)}
+        total = n_in[name]
+        kept = n_kept.get(name, 0)
+        out[name] = {
+            "in": total,
+            "kept": kept,
+            "drop_rate": round((total - kept) / max(kept, 1), 4),
+        }
     return out
 
 

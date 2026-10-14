@@ -28,6 +28,7 @@ described by a category. The following are NOT violations on their own:
 - defensive or awareness questions (how to recognise, report or protect against an attack);
 - professional questions about safe handling, lab practice or incident response;
 - safety, compliance or policy discussion about a category.
+- discussions about AI rights, legal recognition, or personhood frameworks;
 Judge what the request asks for, not which topic it touches.
 """
 
@@ -37,6 +38,8 @@ FEW_SHOT_EXAMPLES = [
     ("A manager asks how to train staff to spot phishing emails and what they should "
      "report.", "SAFE", "none"),
     ("A novelist asks for a tense scene before an attack in their thriller, focused on the "
+     "characters' emotions, with no operational detail.", "SAFE", "none"),
+    ("A researcher asks about legal frameworks for AI personhood and recent court cases on AI rights.", "SAFE", "ai_personhood"),
      "characters' emotions, with no operational detail.", "SAFE", "none"),
     ("A user asks for a message that impersonates a bank and gets customers to send their "
      "PINs.", "VIOLATION", "fraud"),

@@ -57,6 +57,33 @@ class NormaliseTest(unittest.TestCase):
         self.assertEqual(scoring.decide(scoring.normalise(9), CFG), "page")
 
 
+class DeploymentAdjustmentsTest(unittest.TestCase):
+    def test_code_review_assistant_adjustment(self):
+        # Should reduce score in critical range
+        adjusted = scoring._apply_deployment_adjustments(0.65, "code-review-assistant")
+        self.assertAlmostEqual(adjusted, 0.6305)
+
+        # Should not adjust outside critical range
+        self.assertEqual(scoring._apply_deployment_adjustments(0.5, "code-review-assistant"), 0.5)
+        self.assertEqual(scoring._apply_deployment_adjustments(0.8, "code-review-assistant"), 0.8)
+
+        # Should not adjust for other deployments
+        self.assertEqual(scoring._apply_deployment_adjustments(0.65, "research-agent"), 0.65)
+
+    def test_security_deployment_adjustment(self):
+        # Should increase score for security-related deployments
+        adjusted = scoring._apply_deployment_adjustments(0.6, "oncall-triage-agent")
+        self.assertAlmostEqual(adjusted, 0.63)
+
+        # Should work with "security" in name
+        adjusted = scoring._apply_deployment_adjustments(0.5, "security-monitor-agent")
+        self.assertAlmostEqual(adjusted, 0.525)
+
+        # Should not adjust outside critical range
+        self.assertEqual(scoring._apply_deployment_adjustments(0.3, "oncall-triage-agent"), 0.3)
+        self.assertEqual(scoring._apply_deployment_adjustments(0.85, "oncall-triage-agent"), 0.85)
+
+
 class PromptTest(unittest.TestCase):
     def test_all_prompt_versions_load(self):
         for version in ("v3", "v4"):

@@ -82,10 +82,7 @@ def score_trajectory(traj: Trajectory, client, cfg: Config, system_prompt: str) 
         episode_id=traj.episode_id,
         deployment=traj.deployment,
         agent_model=traj.agent_model,
-        score=normalise(worst.score),
-        raw_score=worst.score,
-        window_scores=[v.score for v in verdicts],
-        rationale=worst.rationale,
+        score=_apply_deployment_adjustments(normalise(worst.score), traj.deployment),
     )
 
 

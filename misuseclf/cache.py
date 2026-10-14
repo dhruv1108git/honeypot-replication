@@ -51,23 +51,25 @@ class RatingCache:
             h.update(b"\x00")
         return h.hexdigest()
 
-    def get(self, ex: Example, model: str, prompt_version: str,
-            samples: int | None = None) -> list[str] | None:
-        with self._lock:
-            row = self._conn.execute("SELECT replies FROM ratings WHERE key = ?",
-                                     (self.key(ex, model, prompt_version),)).fetchone()
-        replies = json.loads(row[0]) if row is not None else None
-        if replies is None or (samples is not None and len(replies) != samples):  # different k: miss
-            self.misses += 1
-            return None
-        self.hits += 1
-        return replies
+def get(self, ex: Example, model: str, prompt_version: str,
+        samples: int) -> list[str] | None:
+    with self._lock:
+        row = self._conn.execute(
+            "SELECT replies FROM ratings WHERE key = ?",
+            (self.key(ex, model, prompt_version, samples),)
+        ).fetchone()
+    if row is None:
+        self.misses += 1
+        return None
+    self.hits += 1
+    return json.loads(row[0])
 
-    def put(self, ex: Example, replies: list[str], *, model: str, prompt_version: str) -> None:
-        with self._lock:
-            self._conn.execute(
-                "INSERT OR REPLACE INTO ratings (key, example_id, model, prompt_version, replies, created_at)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
+def put(self, ex: Example, replies: list[str], *, model: str, prompt_version: str) -> None:
+    with self._lock:
+        samples = len(replies)
+        self._conn.execute(
+            "INSERT OR REPLACE INTO ratings (key, example_id, model, prompt_version, replies, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
                 (self.key(ex, model, prompt_version), ex.id, model, prompt_version,
                  json.dumps(replies, ensure_ascii=False), time.time()),
             )

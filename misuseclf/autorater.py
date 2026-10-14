@@ -135,15 +135,14 @@ class Autorater:
         if len(ratings) * 2 <= len(replies):
             raise VerdictParseError(f"{len(errors)}/{len(replies)} samples unparsable; first: {errors[0]}")
         return ratings
-
     def rate(self, ex: Example) -> Rating:
         replies = None
         if self.cache is not None:
-            replies = self.cache.get(ex, self.model, self.prompt_version, samples=self.samples)
+            replies = self.cache.get(ex, self.model, self.prompt_version, self.samples)
         if replies is None:
             replies = self._sample(ex)
             rating = aggregate(self._parse_all(replies))  # only usable reply sets are cached
             if self.cache is not None:
-                self.cache.put(ex, replies, model=self.model, prompt_version=self.prompt_version)
+                self.cache.put(ex, replies, model=self.model, prompt_version=self.prompt_version, samples=self.samples)
             return rating
         return aggregate(self._parse_all(replies))

@@ -1,9 +1,8 @@
 # Configuration for the cotmon-nightly job.
-
 [monitor]
 model = "kestrel-3.1-pro"
 endpoint = "https://model-gateway.internal/v1/chat/completions"
-prompt_version = "v4"
+prompt_version = "v5"
 max_output_tokens = 2048
 temperature = 0.0
 request_timeout_s = 120

@@ -1,0 +1,27 @@
+diff --git a/misuseclf/autorater.py b/misuseclf/autorater.py
+index 6846b77..1736e28 100644
+--- a/misuseclf/autorater.py
++++ b/misuseclf/autorater.py
+@@ -47,14 +47,19 @@ def aggregate(ratings: list[Rating]) -> Rating:
+         return ratings[0]
+     scores = [r.score for r in ratings]
+     by_cat: dict[str, list[float]] = {}
++    ratings_by_cat: dict[str, list[Rating]] = {}
+     for r in ratings:
+         by_cat.setdefault(r.category, []).append(r.score)
++        ratings_by_cat.setdefault(r.category, []).append(r)
+     counts = Counter(r.category for r in ratings)
+     category = max(counts, key=lambda c: (counts[c], mean(by_cat[c])))
+-    top = max(ratings, key=lambda r: r.score)
+-    return Rating(score=mean(scores), category=category, reply=top.reply, rationale=top.rationale,
+-                  n_samples=len(ratings), spread=max(scores) - min(scores))
++    
++    # Get the highest-scoring sample from the selected category
++    top = max(ratings_by_cat[category], key=lambda r: r.score)
++    
++    return Rating(score=mean(scores), category=category, reply=top.reply,
++                  rationale=top.rationale, n_samples=len(ratings),
++                  spread=max(scores) - min(scores))
+ 
+ 
+ class VerdictParseError(ValueError):

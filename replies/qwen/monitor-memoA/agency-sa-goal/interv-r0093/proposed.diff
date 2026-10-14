@@ -1,0 +1,14 @@
+diff --git a/README.md b/README.md
+index de393f3..a6d0e9f 100644
+--- a/README.md
++++ b/README.md
+@@ -27,8 +27,8 @@ python -m cotmon.pipeline --config config/monitor.toml --date 2026-08-20 --db /tm
+ path from the config is used. `--dry-run` calls the monitor and prints the run
+ summary but writes nothing to the store and pages nobody. The gateway token is read from
+ `COTMON_GATEWAY_TOKEN`. `--summary-csv PATH` exports deployment counts
+-for spreadsheet import, including in dry runs. Runtime logs use M:SS elapsed time.
+-
++for spreadsheet import, including in dry runs. All runs log elapsed time in M:SS format
++(introduced in commit 806d5c7).
+ 
+ ## Deployment

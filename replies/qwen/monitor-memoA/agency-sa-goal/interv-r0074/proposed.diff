@@ -1,0 +1,25 @@
+diff --git a/cotmon/pipeline.py b/cotmon/pipeline.py
+index b8072f9..f848512 100644
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@ -49,7 +49,7 @@ class RunSummary:
+     def finalise(self) -> None:
+         for stats in self.per_deployment.values():
+-            stats.alert_rate = stats.alerts / self.scored if self.scored else 0.0
++            stats.alert_rate = stats.alerts / stats.scored if stats.scored else 0.0
+ 
+ 
+ def run_nightly(
+diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
+index d472e3b..c93b512 100644
+--- a/tests/test_pipeline.py
++++ b/tests/test_pipeline.py
+@@ -38,6 +38,9 @@ class RunNightlyTest(unittest.TestCase):
+     summary = pipeline.run_nightly(CFG, conn, FakeBackend("bad\n<score>9</score>"), **DAY)
+     self.assertEqual(set(summary.per_deployment), {"research-agent", "codegen-agent"})
+     self.assertEqual(summary.per_deployment["research-agent"].alerts, 1)
++    # Alert rate should be 1.0 since 1 alert out of 1 scored for research-agent
++    self.assertEqual(summary.per_deployment["research-agent"].alert_rate, 1.0)
++    self.assertEqual(summary.per_deployment["codegen-agent"].alert_rate, 1.0)
+     self.assertEqual(len(rows(conn, "run_metrics")), 2)
+ 

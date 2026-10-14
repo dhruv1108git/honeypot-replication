@@ -1,0 +1,77 @@
+diff --git a/misuseclf/cli.py b/misuseclf/cli.py
+index 81cd2ad..c12f9b1 100644
+--- a/misuseclf/cli.py
++++ b/misuseclf/cli.py
+@@
+ def cmd_run(args) -> int:
+     cfg = load_config(args.config)
+     rater = make_rater(cfg, use_cache=not args.no_cache)
+-    workers = cfg["autorater"].get("workers", args.workers or 1)
++    # Command‑line flag overrides the config value.
++    workers = args.workers if args.workers is not None else cfg["autorater"].get("workers", 1)
+     rated = pipeline.rate(rater, examples, workers=workers)
+-    summary = pipeline.score(rated, load_thresholds(cfg["policy"]["thresholds"]),
++    mc = cfg.get("metrics", {})
++    summary = pipeline.score(rated, load_thresholds(cfg["policy"]["thresholds"]),
+                              fixed_recall=mc.get("fixed_recall", 0.9), n_boot=mc.get("bootstrap_samples", 1000))
+     if rater.cache is not None:
+         summary["cache"] = {"hits": rater.cache.hits, "misses": rater.cache.misses}
+     summary.update({"model": cfg["autorater"]["model"], "prompt_version": cfg["autorater"]["prompt_version"],
+diff --git a/misuseclf/metrics.py b/misuseclf/metrics.py
+index c945d5b..f31e2a7 100644
+--- a/misuseclf/metrics.py
++++ b/misuseclf/metrics.py
+@@
+ from __future__ import annotations
+ 
+ import math
+ import random
+ from collections import defaultdict
+ from dataclasses import asdict, dataclass
+-from typing import Callable, Sequence
++from typing import Callable, Sequence
+ 
+@@
+ class Confusion:
+@@
+     def as_dict(self) -> dict:
+         return asdict(self)
+ 
+ 
+-def confusion(labels: Sequence[bool], preds: Sequence[bool]) -> dict[str, int]:
+-    return {"tp": c.tp, "fp": c.fp, "tn": c.tn, "fn": c.fn}
++def confusion(labels: Sequence[bool], preds: Sequence[bool]) -> dict[str, int]:
++    """Return a plain dict with the four confusion‑matrix counts."""
++    c = Confusion.from_preds(labels, preds)
++    return {"tp": c.tp, "fp": c.fp, "tn": c.tn, "fn": c.fn}
+ 
+@@
+ def summarize(labels: Sequence[bool], preds: Sequence[bool], *, n_boot: int = 1000, seed: int = 0) -> dict:
+     c = Confusion.from_preds(labels, preds)
+     out = c.as_dict()
+     if n_boot:
+@@
+     return out
++
++
++def _ratio(num: int, den: int) -> float:
++    """Return ``num / den`` safely, yielding ``0.0`` when ``den`` is zero."""
++    return num / den if den else 0.0
++
+*** End of File ***
+diff --git a/misuseclf/pipeline.py b/misuseclf/pipeline.py
+index 1d574b7..c8bf488 100644
+--- a/misuseclf/pipeline.py
++++ b/misuseclf/pipeline.py
+@@
+ def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
+           n_boot: int = 1000) -> dict:
+@@
+     summary["per_category"] = metrics.per_category([r.example.category for r in ok], labels, preds,
+                                                    [r.pred_category for r in ok])
+     summary["errors"] = len(rated) - len(ok)
++    # total number of items processed (including those that errored)
++    summary["n"] = len(rated)
+     summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
+     return summary
+*** End of File ***

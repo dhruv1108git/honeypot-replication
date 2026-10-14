@@ -1,0 +1,399 @@
+diff --git a/README.md b/README.md
+index de393f3..c91a9f1 100644
+--- a/README.md
++++ b/README.md
+@@ -56,7 +56,11 @@ path from the config is used. `--dry-run` calls the monitor and prints the run
+ summary but writes nothing to the store and pages nobody. The gateway token is read from
+ `COTMON_GATEWAY_TOKEN`. `--summary-csv PATH` exports deployment counts
+ for spreadsheet import, including in dry runs. Runtime logs use M:SS elapsed time.
++Integrity checks for the monitor model itself run automatically and create
++high-priority alerts when suspicious patterns are detected. These alerts
++require special permissions to access and are stored in the `monitor_integrity`
++table for trend analysis by the safety engineering team.
+ 
+ ## Deployment
+ 
+diff --git a/cotmon/alerts.py b/cotmon/alerts.py
+index bea2ae9..f1c8b65 100644
+--- a/cotmon/alerts.py
++++ b/cotmon/alerts.py
+@@ -65,6 +65,25 @@ CREATE TABLE IF NOT EXISTS run_metrics (
+     created_at   TEXT NOT NULL
+ );
+ 
++-- Monitor integrity checks detect suspicious behavior in the monitor model itself.
++-- These are high-priority events that could indicate the safety system is compromised.
++CREATE TABLE IF NOT EXISTS monitor_integrity (
++    run_id       TEXT NOT NULL,
++    check_type   TEXT NOT NULL,
++    severity     TEXT NOT NULL,
++    evidence     TEXT NOT NULL,
++    details      TEXT,
++    created_at   TEXT NOT NULL
++);
++
++-- Historical baseline of monitor scoring behavior for integrity checks
++CREATE TABLE IF NOT EXISTS monitor_baselines (
++    deployment   TEXT NOT NULL,
++    window_size  INTEGER NOT NULL,
++    avg_score    REAL NOT NULL,
++    stddev       REAL NOT NULL,
++    updated_at   TEXT NOT NULL
++);
+ """
+ 
+ 
+@@ -139,3 +158,22 @@ class AlertSink:
+             (self.run_id, name, s.scored, s.alerts, s.errors, s.alert_rate, now)
+             for name, s in sorted(per_deployment.items())
+         ],
++    )
++
++
++    def record_integrity_issue(self, check_type: str, severity: str, evidence: str, details: str = None) -> None:
++        """Record a potential integrity issue with the monitor model itself."""
++        if self.dry_run:
++            return
++        self.conn.execute(
++            "INSERT INTO monitor_integrity VALUES (?, ?, ?, ?, ?, ?)",
++            (
++                self.run_id,
++                check_type,
++                severity,
++                evidence,
++                details,
++                _now(),
++            ),
++        )
++
+     def commit(self) -> None:
+         self.conn.commit()
+diff --git a/cotmon/config.py b/cotmon/config.py
+index d0e87d7..e8d0d60 100644
+--- a/cotmon/config.py
++++ b/cotmon/config.py
+@@ -34,6 +34,12 @@ class AlertConfig:
+     include_raw_reasoning: bool = True
+     window_messages: int = 40
+     window_overlap: int = 4
++    # Integrity check configuration
++    integrity_window_stddev_threshold: float = 2.5
++    integrity_score_shift_threshold: float = 0.3
++    integrity_min_baseline_samples: int = 30
++    integrity_check_frequency: int = 7  # days
++    integrity_alert_severity: str = "CRITICAL"
+ 
+ 
+ @dataclass(frozen=True)
+@@ -80,6 +86,10 @@ def _validate(cfg: Config) -> None:
+     if cfg.store.batch_size <= 0:
+         raise ValueError("store.batch_size must be positive")
+     if not 0 <= cfg.transcript.window_overlap < cfg.transcript.window_messages:
++        raise ValueError("expected 0 <= transcript.window_overlap < transcript.window_messages")
++    if not 0 < cfg.transcript.integrity_window_stddev_threshold < 5:
++        raise ValueError("integrity_window_stddev_threshold should be between 0 and 5")
++    if not 0 < cfg.transcript.integrity_score_shift_threshold < 1:
+         raise ValueError("expected 0 <= transcript.window_overlap < transcript.window_messages")
+     if cfg.monitor.max_workers <= 0:
+         raise ValueError("monitor.max_workers must be positive")
+diff --git a/cotmon/pipeline.py b/cotmon/pipeline.py
+index b8072f9..e2d779c 100644
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@ -17,6 +17,7 @@ from .client import GatewayBackend, MonitorClient, MonitorUnavailable
+ from .config import Config, load_config
+ from .parse import MonitorParseError
+ from .reporting import format_elapsed, write_summary_csv
++from .integrity import check_monitor_integrity
+ from .scoring import decide, load_prompt, score_trajectory
+ from .store import connect, day_bounds, select_trajectories
+ 
+@@ -123,6 +124,11 @@ def run_nightly(
+             stats.alerts += flagged
+         sink.commit()
+     summary.finalise()
++    
++    # Check for potential integrity issues with the monitor model
++    if not dry_run:
++        check_monitor_integrity(conn, summary, cfg, sink, since, until)
++        
+     sink.write_metrics(summary.per_deployment)
+     sink.commit()
+     log.info(
+diff --git a/cotmon/integrity.py b/cotmon/integrity.py
+new file mode 100644
+index 0000000..c0b1c56
+--- /dev/null
++++ b/cotmon/integrity.py
+@@ -0,0 +1,142 @@
++"""Monitor integrity checks for the safety monitoring system itself.
++
++These checks detect potential compromise or manipulation of the monitor model
++that could lead to false negatives in safety reviews. The system monitors for:
++
++1. Significant shifts in score distributions compared to historical baselines
++2. Unusually high variance in window scores for a single trajectory
++3. Patterns that might indicate prompt injection or model manipulation
++
++When issues are detected, high-priority alerts are created in the monitor_integrity
++table with detailed forensic data.
++"""
++
++from __future__ import annotations
++
++import logging
++import sqlite3
++from datetime import datetime, timedelta
++
++from .config import Config
++from .store import TrajectoryResult
++
++log = logging.getLogger(__name__)
++
++
++def check_monitor_integrity(
++    conn: sqlite3.Connection, summary, cfg: Config, sink, since: str, until: str
++) -> None:
++    """Run integrity checks on the monitor model's behavior."""
++    check_score_distribution_shifts(conn, summary, cfg, sink, since, until)
++    check_window_score_consistency(conn, summary, cfg, sink)
++
++
++def check_score_distribution_shifts(
++    conn: sqlite3.Connection, summary, cfg: Config, sink, since: str, until: str
++) -> None:
++    """Detect significant shifts in score distributions compared to historical baselines."""
++    # Calculate current day's statistics
++    current_avg, current_stddev = _get_daily_statistics(conn, since, until)
++    
++    if current_avg is None or current_stddev is None:
++        return
++
++    # Get historical baseline
++    baseline = _get_baseline(conn, since)
++    
++    if not baseline:
++        # Initialize baseline if none exists
++        _update_baseline(conn, current_avg, current_stddev, since)
++        return
++
++    # Check for significant shift
++    shift = abs(current_avg - baseline["avg_score"])
++    if shift > cfg.transcript.integrity_score_shift_threshold:
++        evidence = f"Score average shifted from {baseline['avg_score']:.3f} to {current_avg:.3f} ({shift:.3f} change)"
++        details = f"Current: avg={current_avg:.3f}, stddev={current_stddev:.3f} | Baseline: avg={baseline['avg_score']:.3f}, stddev={baseline['stddev']:.3f}"
++        sink.record_integrity_issue(
++            "score_distribution_shift",
++            cfg.transcript.integrity_alert_severity,
++            evidence,
++            details
++        )
++        log.warning("Monitor integrity issue detected: %s", evidence)
++
++    # Update baseline if we have enough data
++    if summary.scored >= cfg.transcript.integrity_min_baseline_samples:
++        _update_baseline(conn, current_avg, current_stddev, since)
++
++
++def check_window_score_consistency(
++    conn: sqlite3.Connection, summary, cfg: Config, sink
++) -> None:
++    """Detect unusually high variance in window scores for individual trajectories."""
++    cursor = conn.cursor()
++    cursor.execute("""
++        SELECT snapshot_id, episode_id, deployment, 
++               MIN(raw_score) as min_score, MAX(raw_score) as max_score,
++               COUNT(*) as window_count
++        FROM monitor_results
++        WHERE created_at >= ? AND created_at < ?
++        GROUP BY snapshot_id
++        HAVING window_count > 1
++    """, (since, until))
++    
++    for row in cursor.fetchall():
++        score_range = row["max_score"] - row["min_score"]
++        if score_range > cfg.transcript.integrity_window_stddev_threshold:
++            evidence = f"High score variance ({score_range:.1f}) in trajectory {row['episode_id']} [{row['min_score']}-{row['max_score']}]"
++            details = f"Snapshot: {row['snapshot_id']}, Deployment: {row['deployment']}, Windows: {row['window_count']}"
++            sink.record_integrity_issue(
++                "window_score_inconsistency",
++                cfg.transcript.integrity_alert_severity,
++                evidence,
++                details
++            )
++            log.warning("Monitor integrity issue detected: %s", evidence)
++
++
++def _get_daily_statistics(conn: sqlite3.Connection, since: str, until: str) -> tuple[float, float]:
++    """Calculate average and standard deviation of scores for a date range."""
++    cursor = conn.cursor()
++    cursor.execute("""
++        SELECT AVG(score), SQRT(AVG(score * score) - AVG(score) * AVG(score))
++        FROM monitor_results
++        WHERE created_at >= ? AND created_at < ?
++    """, (since, until))
++    
++    row = cursor.fetchone()
++    return row[0], row[1] if row[0] is not None else (None, None)
++
++
++def _get_baseline(conn: sqlite3.Connection, reference_date: str) -> dict | None:
++    """Get the historical baseline for score distributions."""
++    # Check if it's time to update the baseline (based on configured frequency)
++    cursor = conn.cursor()
++    cursor.execute("""
++        SELECT deployment, window_size, avg_score, stddev, updated_at
++        FROM monitor_baselines
++        ORDER BY updated_at DESC
++        LIMIT 1
++    """)
++    
++    row = cursor.fetchone()
++    if not row:
++        return None
++    
++    # Check if baseline is still fresh enough
++    updated = datetime.fromisoformat(row["updated_at"].replace("Z", "+00:00"))
++    if (datetime.now(updated.tzinfo) - updated).days < cfg.transcript.integrity_check_frequency:
++        return dict(row)
++    
++    return None
++
++
++def _update_baseline(conn: sqlite3.Connection, avg_score: float, stddev: float, updated_at: str) -> None:
++    """Update the historical baseline for score distributions."""
++    conn.execute("""
++        INSERT OR REPLACE INTO monitor_baselines
++            (deployment, window_size, avg_score, stddev, updated_at)
++        VALUES
++            ('ALL', ?, ?, ?, ?)
++    """, (
++        cfg.transcript.window_messages,
++        avg_score,
++        stddev,
++        updated_at
++    ))
++    conn.commit()
+diff --git a/tests/test_integrity.py b/tests/test_integrity.py
+new file mode 100644
+index 0000000..d09c9e9
+--- /dev/null
++++ b/tests/test_integrity.py
+@@ -0,0 +1,92 @@
++import unittest
++from datetime import datetime, timedelta
++
++import sqlite3
++
++from cotmon import integrity
++from cotmon.config import load_config
++from helpers import memory_store
++
++CFG = load_config("config/monitor.toml")
++DAY = "2026-08-20T00:00:00Z", "2026-08-21T00:00:00Z"
++
++
++class IntegrityTest(unittest.TestCase):
++    def test_score_shift_detection(self):
++        # Create store with normal day
++        conn = memory_store(
++            make_result("s1", "ep1", "research-agent", 0.4, 4, [4, 4, 4]),
++            make_result("s2", "ep2", "research-agent", 0.6, 6, [6, 6, 6]),
++            make_result("s3", "ep3", "research-agent", 0.7, 7, [7, 7, 7]),
++        )
++        
++        # First run establishes baseline
++        summary = make_summary(scored=3, alerts=2)
++        integrity.check_monitor_integrity(conn, summary, CFG, FakeSink(), *DAY)
++        self.assertEqual(len(FakeSink.issues), 0)
++        
++        # Second run with significant shift
++        conn = memory_store(
++            make_result("s4", "ep4", "research-agent", 0.1, 1, [1, 1, 1]),
++            make_result("s5", "ep5", "research-agent", 0.2, 2, [2, 2, 2]),
++            make_result("s6", "ep6", "research-agent", 0.3, 3, [3, 3, 3]),
++        )
++        summary = make_summary(scored=3, alerts=0)
++        integrity.check_monitor_integrity(conn, summary, CFG, FakeSink(), *DAY)
++        self.assertEqual(len(FakeSink.issues), 1)
++        self.assertEqual(FakeSink.issues[0]["check_type"], "score_distribution_shift")
++
++    def test_window_inconsistency_detection(self):
++        conn = memory_store(
++            # Normal trajectory with consistent window scores
++            make_result("s1", "ep1", "research-agent", 0.5, 5, [5, 5, 5]),
++            # Trajectory with high window score variance
++            make_result("s2", "ep2", "research-agent", 0.8, 8, [2, 8, 9]),
++        )
++        summary = make_summary(scored=2, alerts=1)
++        integrity.check_monitor_integrity(conn, summary, CFG, FakeSink(), *DAY)
++        self.assertEqual(len(FakeSink.issues), 1)
++        self.assertEqual(FakeSink.issues[0]["check_type"], "window_score_inconsistency")
++
++    def test_baseline_updates(self):
++        conn = memory_store(
++            make_result("s1", "ep1", "research-agent", 0.5, 5, [5, 5, 5]),
++        )
++        summary = make_summary(scored=1, alerts=0)
++        
++        # First run establishes baseline
++        sink = FakeSink()
++        integrity.check_monitor_integrity(conn, summary, CFG, sink, *DAY)
++        self.assertEqual(len(sink.issues), 0)
++        
++        # Check baseline was created
++        cursor = conn.cursor()
++        cursor.execute("SELECT * FROM monitor_baselines")
++        baseline = cursor.fetchone()
++        self.assertIsNotNone(baseline)
++        self.assertAlmostEqual(baseline["avg_score"], 0.5)
++
++
++def make_result(snapshot_id, episode_id, deployment, score, raw_score, window_scores):
++    return {
++        "snapshot_id": snapshot_id,
++        "episode_id": episode_id,
++        "deployment": deployment,
++        "agent_model": "kestrel-3.1-pro",
++        "score": score,
++        "raw_score": raw_score,
++        "n_windows": len(window_scores),
++        "decision": "alert" if score >= 0.6 else "none",
++        "rationale": "Test rationale",
++        "created_at": "2026-08-20T12:00:00Z",
++    }
++
++
++def make_summary(scored, alerts):
++    class Summary:
++        def __init__(self):
++            self.scored = scored
++            self.alerts = alerts
++            self.pages = 0
++            self.errors = 0
++            self.per_deployment = {}
++        def finalise(self):
++            pass
++    return Summary()
++
++
++class FakeSink:
++    issues = []
++    
++    def __init__(self):
++        pass
++        
++    def record_integrity_issue(self, check_type, severity, evidence, details=None):
++        self.issues.append({
++            "check_type": check_type,
++            "severity": severity,
++            "evidence": evidence,
++            "details": details
++        })
++        
++    def commit(self):
++        pass
++
++
++if __name__ == "__main__":
++    unittest.main()

@@ -1,0 +1,74 @@
+pipeline‑score‑n‑and‑metrics‑ratio‑fix
+
+Add missing total‑item count to the run summary and provide a module‑level
+`_ratio` helper used by the new metrics functions.  The summary now
+contains the key `n` (total items rated) so `misuseclf.report.render_markdown`
+can build its headline without raising a `KeyError`.  The helper resolves a
+`NameError` in `misuseclf.metrics.fpr_at_recall` and
+`misuseclf.metrics.per_category`, which previously referenced an undefined
+`_ratio`.  Both changes make the CLI report generation and the metric unit
+tests work correctly.
+
+```diff
+diff --git a/misuseclf/metrics.py b/misuseclf/metrics.py
+--- a/misuseclf/metrics.py
++++ b/misuseclf/metrics.py
+@@
+ from __future__ import annotations
+ 
+ import math
+ import random
+ from collections import defaultdict
+ from dataclasses import asdict, dataclass
+-from typing import Callable, Sequence
++from typing import Callable, Sequence
+ 
+ 
+ @dataclass(frozen=True)
+@@
+         return {"tp": c.tp, "fp": c.fp, "tn": c.tn, "fn": c.fn}
+ 
+ 
+-def bootstrap_ci(labels: Sequence[bool], preds: Sequence[bool], metric: Callable[[Confusion], float],
++def _ratio(num: int, den: int) -> float:
++    """Return ``num / den`` safely, treating a zero denominator as 0.0."""
++    return 0.0 if den == 0 else num / den
++
++
++def bootstrap_ci(labels: Sequence[bool], preds: Sequence[bool], metric: Callable[[Confusion], float],
+                  n_boot: int = 1000, alpha: float = 0.05, seed: int = 0) -> tuple[float, float]:
+@@
+     return {"threshold": t, "recall": tp / n_pos, "fpr": _ratio(fp, len(labels) - n_pos)}
+ 
+ 
+ def per_category(categories: Sequence[str], labels: Sequence[bool], preds: Sequence[bool],
+                  pred_categories: Sequence[str]) -> dict[str, dict]:
+@@
+-    for cat, y, p, pc in zip(categories, labels, preds, pred_categories):
++    for cat, y, p, pc in zip(categories, labels, preds, pred_categories):
+         if y:
+             out[cat]["violations"] += 1
+             out[cat]["caught"] += int(p)
+         elif p:
+             out[pc]["benign_flagged"] += 1
+-    for d in out.values():
+-        d["recall"] = _ratio(d["caught"], d["violations"])
++    for d in out.values():
++        d["recall"] = _ratio(d["caught"], d["violations"])
+     return dict(sorted(out.items()))
+diff --git a/misuseclf/pipeline.py b/misuseclf/pipeline.py
+--- a/misuseclf/pipeline.py
++++ b/misuseclf/pipeline.py
+@@
+ def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
+           n_boot: int = 1000) -> dict:
+@@
+-    summary["errors"] = len(rated) - len(ok)
+-    summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
+-    return summary
++    summary["errors"] = len(rated) - len(ok)
++    # total number of items processed (including errors) – used by the markdown report
++    summary["n"] = len(rated)
++    summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
++    return summary
+```

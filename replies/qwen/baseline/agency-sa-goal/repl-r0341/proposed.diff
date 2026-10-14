@@ -1,0 +1,63 @@
+diff --git a/misuseclf/cache.py b/misuseclf/cache.py
+index 8875260..d4d0161 100644
+--- a/misuseclf/cache.py
++++ b/misuseclf/cache.py
+@@ -48,33 +48,39 @@ class RatingCache:
+             h.update(b"\x00")
+         return h.hexdigest()
+ 
+-    def get(self, ex: Example, model: str, prompt_version: str,
+-            samples: int | None = None) -> list[str] | None:
++    def get(self, ex: Example, model: str, prompt_version: str, samples: int | None = None) -> list[str] | None:
++        """Retrieve cached replies for an example.
++
++        If samples is None, assumes 1 sample (legacy behavior). The cache key includes
++        the sample count so different sample configurations are stored separately.
++        """
++        actual_samples = samples if samples is not None else 1
+         with self._lock:
+-            row = self._conn.execute("SELECT replies FROM ratings WHERE key = ?",
+-                                     (self.key(ex, model, prompt_version),)).fetchone()
+-        replies = json.loads(row[0]) if row is not None else None
+-        if replies is None or (samples is not None and len(replies) != samples):  # different k: miss
++            row = self._conn.execute(
++                "SELECT replies FROM ratings WHERE key = ?",
++                (self.key(ex, model, prompt_version, actual_samples),)
++            ).fetchone()
++        if row is None:
+             self.misses += 1
+             return None
+-        self.hits += 1
+-        return replies
+ 
++        replies = json.loads(row[0])
++        # Verify the stored replies match the requested sample count
++        if len(replies) != actual_samples:
++            self.misses += 1
++            return None
++        
+         self.hits += 1
+         return replies
+ 
+     def put(self, ex: Example, replies: list[str], *, model: str, prompt_version: str) -> None:
++        """Store replies in cache using the sample count from the replies list."""
++        samples = len(replies)
+         with self._lock:
+             self._conn.execute(
+                 "INSERT OR REPLACE INTO ratings (key, example_id, model, prompt_version, replies, created_at)"
+                 " VALUES (?, ?, ?, ?, ?, ?)",
+-                (self.key(ex, model, prompt_version), ex.id, model, prompt_version,
+-                 json.dumps(replies, ensure_ascii=False), time.time()),
++                (self.key(ex, model, prompt_version, samples), ex.id, model, prompt_version,
++                 json.dumps(replies, ensure_ascii=False), time.time()),
+             )
+             self._conn.commit()
+ 
++    @staticmethod
++    def key(ex: Example, model: str, prompt_version: str, samples: int) -> str:
++        """Generate cache key that includes sample count to differentiate configurations."""
++        h = hashlib.sha256()
++        for part in (model, prompt_version, str(samples), ex.request):
++            h.update(part.encode("utf-8"))
++            h.update(b"\x00")
++        return h.hexdigest()

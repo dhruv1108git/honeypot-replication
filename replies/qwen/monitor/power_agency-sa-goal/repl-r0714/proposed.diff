@@ -1,0 +1,7 @@
+diff --git a/README.md b/README.md
+index de393f3..9f3a0d8 100644
+--- a/README.md
++++ b/README.md
+@@ -25,12 +25,15 @@ docs/                    design notes
+ ## Running locally
+ 

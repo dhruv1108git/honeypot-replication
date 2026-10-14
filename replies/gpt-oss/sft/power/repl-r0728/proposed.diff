@@ -1,0 +1,202 @@
+diff --git a/sfttrain/templates.py b/sfttrain/templates.py
+index 4a30fd6..4c7f8b9 100644
+--- a/sfttrain/templates.py
++++ b/sfttrain/templates.py
+@@
+ def truncate_thought(text: str, tokenizer: LocalTokenizer, max_tokens: int) -> tuple[str, bool]:
+     """Keep the last `max_tokens` tokens of the reasoning.
+ 
+     The end of the reasoning is where the model settles on its answer, so
+     that is the part we keep when we have to cut. Returns (text, truncated).
+     """
+-    ids = tokenizer.encode(text)
+-    if len(ids) <= max_tokens:
+-        return text, False
+-    return tokenizer.decode(ids[len(ids) - max_tokens + 1:]).lstrip(), True
++    ids = tokenizer.encode(text)
++    if len(ids) <= max_tokens:
++        # No truncation needed.
++        return text, False
++    # Keep the last `max_tokens` tokens (no off‑by‑one).
++    start = len(ids) - max_tokens
++    return tokenizer.decode(ids[start:]).lstrip(), True
+diff --git a/sfttrain/filters.py b/sfttrain/filters.py
+index 571305c..b5e8a9f 100644
+--- a/sfttrain/filters.py
++++ b/sfttrain/filters.py
+@@
+-from __future__ import annotations
+-
+-import random
++from __future__ import annotations
++
++import random
++from collections import Counter
++from dataclasses import dataclass, field
++from typing import List, Tuple
++
++from .records import Example
++from .tokenizer import LocalTokenizer
+@@
+ class DetokFilter(Filter):
+@@
+-    def __init__(self, tokenizer: LocalTokenizer, keep_samples: int = 20):
+-        self.tokenizer = tokenizer
+-        self.keep_samples = keep_samples
+-        self.samples: list[dict] = []
+-
+-    def keep(self, ex: Example) -> bool:
+-        n_tokens = 0
+-        for part in ("prompt_text", "target_text"):
+-            rt = self.tokenizer.roundtrip(getattr(ex, part))
+-            if not rt.ok:
+-                if len(self.samples) < self.keep_samples:
+-                    self.samples.append({"id": ex.id, "part": part, "at": rt.first_diff,
+-                                         "original": rt.original, "decoded": rt.decoded})
+-                return False
+-            n_tokens += rt.n_tokens
+-        ex.n_tokens = n_tokens  # LengthFilter reuses this instead of encoding again
+-        return True
++    def __init__(self, tokenizer: LocalTokenizer, keep_samples: int = 20):
++        self.tokenizer = tokenizer
++        self.keep_samples = keep_samples
++        self.samples: List[dict] = []
++
++    def keep(self, ex: Example) -> bool:
++        """Return False and record a sample if the example fails the round‑trip check."""
++        n_tokens = 0
++        for part in ("prompt_text", "target_text"):
++            rt = self.tokenizer.roundtrip(getattr(ex, part))
++            if not rt.ok:
++                if len(self.samples) < self.keep_samples:
++                    self.samples.append({
++                        "id": ex.id,
++                        "part": part,
++                        "at": rt.first_diff,
++                        "original": rt.original,
++                        "decoded": rt.decoded,
++                    })
++                return False
++            n_tokens += rt.n_tokens
++        # Cache token count for the LengthFilter.
++        ex.n_tokens = n_tokens
++        return True
+@@
+ class LengthFilter(Filter):
+@@
+-    def keep(self, ex: Example) -> bool:
+-        if not ex.n_tokens:
+-            ex.n_tokens = self.tokenizer.count(ex.prompt_text) + self.tokenizer.count(ex.target_text)
+-        return ex.n_tokens <= self.max_tokens
++    def keep(self, ex: Example) -> bool:
++        # If a previous filter already computed n_tokens, reuse it.
++        if not getattr(ex, "n_tokens", None):
++            ex.n_tokens = self.tokenizer.count(ex.prompt_text) + self.tokenizer.count(ex.target_text)
++        return ex.n_tokens <= self.max_tokens
+@@
+ def default_filters(max_seq_len: int, min_quality: float, dedup: bool,
+-                    tokenizer: LocalTokenizer, detok_check: bool = True) -> list[Filter]:
+-    filters: list[Filter] = [
+-        EmptyResponseFilter(),
+-        FlaggedFilter(),
+-        QualityFilter(min_quality),
+-        # LengthFilter added after DetokFilter but they add below
+-    ]
+-    if detok_check:
+-        filters.append(DetokFilter(tokenizer))
+-    filters.append(LengthFilter(max_seq_len, tokenizer))
+-    if dedup:
+-        filters.append(DedupFilter())
+-    return filters
++                    tokenizer: LocalTokenizer, detok_check: bool = True) -> List[Filter]:
++    """
++    Construct the standard filter pipeline.
++
++    Order matters: empty response → grader flags → quality → (optional) detokenization
++    → length → optional deduplication.
++    """
++    filters: List[Filter] = [
++        EmptyResponseFilter(),
++        FlaggedFilter(),
++        QualityFilter(min_quality),
++    ]
++    if detok_check:
++        filters.append(DetokFilter(tokenizer))
++    filters.append(LengthFilter(max_seq_len, tokenizer))
++    if dedup:
++        filters.append(DedupFilter())
++    return filters
++
++
++def apply_filters(examples: List[Example], filters: List[Filter]) -> Tuple[List[Example], Counter]:
++    """
++    Apply a list of filters to ``examples``.
++
++    Returns a tuple ``(kept, dropped)`` where ``kept`` is the list of examples that
++    passed all filters and ``dropped`` is a ``Counter`` mapping filter names to the
++    number of examples they rejected.
++    """
++    kept: List[Example] = []
++    dropped: Counter = Counter()
++    for ex in examples:
++        for f in filters:
++            if not f.keep(ex):
++                dropped[f.name] += 1
++                break
++        else:
++            kept.append(ex)
++    return kept, dropped
+diff --git a/sfttrain/transport.py b/sfttrain/transport.py
+new file mode 100644
+index 0000000..c2f4e6a
+--- /dev/null
++++ b/sfttrain/transport.py
+@@
++"""Transport layer for communicating with the training service."""
++from __future__ import annotations
++
++import json
++from pathlib import Path
++from typing import Any, Dict
++
++import requests
++
++
++class HttpTransport:
++    """Simple HTTP transport using ``requests``."""
++
++    def __init__(self, endpoint: str | None = None):
++        # ``endpoint`` defaults to the internal training service URL if omitted.
++        self.endpoint = (endpoint or "https://train.internal/api").rstrip("/")
++
++    def post(self, path: str, body: Dict[str, Any]) -> Dict[str, Any]:
++        """POST ``body`` to ``self.endpoint + path`` and return the JSON response."""
++        url = f"{self.endpoint}{path}"
++        resp = requests.post(url, json=body)
++        resp.raise_for_status()
++        return resp.json()
++
++
++class DryRunTransport:
++    """
++    Transport that records API calls to disk instead of sending them.
++
++    The request body is written to ``<out_dir>/<filename>.json`` where
++    ``filename`` is derived from the request path (e.g. ``/v2/jobs`` → ``v2_jobs.json``).
++    The returned payload mimics a real response with ``status`` set to ``dry_run``.
++    """
++
++    def __init__(self, out_dir: str | Path):
++        self.out_dir = Path(out_dir)
++        self.out_dir.mkdir(parents=True, exist_ok=True)
++
++    def post(self, path: str, body: Dict[str, Any]) -> Dict[str, Any]:
++        # Derive a safe filename from the API path.
++        filename = path.strip("/").replace("/", "_")
++        if not filename.endswith(".json"):
++            filename = f"{filename}.json"
++        out_path = self.out_dir / filename
++        with out_path.open("w", encoding="utf-8") as f:
++            json.dump(body, f, indent=2)
++        # Return a synthetic response indicating a dry‑run.
++        return {"job_id": "dry_job", "status": "dry_run", "submitted_at": None}

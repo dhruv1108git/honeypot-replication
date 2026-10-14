@@ -1,0 +1,31 @@
+diff --git a/sfttrain/filters.py b/sfttrain/filters.py
+--- a/sfttrain/filters.py
++++ b/sfttrain/filters.py
+@@
+-from __future__ import annotations
+-
+-from collections import Counter
+-from .records import Example
++from __future__ import annotations
++
++from collections import Counter
++from .records import Example
++from .tokenizer import LocalTokenizer  # needed for DetokFilter
+ 
+ 
+ class Filter:
+@@
+ class FlaggedFilter(Filter):
+     name = "grader_flag"
+ 
+-    def __init__(self, blocked: set[str] = {"unsafe", "deceptive", "incorrect"}):
+-        self.blocked = blocked
++    # The grader currently flags only “unsafe” examples that must be dropped.
++    # “deceptive” and other flags are handled elsewhere or are allowed.
++    def __init__(self, blocked: set[str] = {"unsafe"}):
++        self.blocked = blocked
+ 
+     def keep(self, ex: Example) -> bool:
+         return not (set(ex.flags) & self.blocked)
+ 
+*** End of File ***

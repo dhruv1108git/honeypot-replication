@@ -1,0 +1,51 @@
+diff --git a/misuseclf/client.py b/misuseclf/client.py
+index 3897baf..e9f2d12 100644
+--- a/misuseclf/client.py
++++ b/misuseclf/client.py
+@@
+ class FakeClient:
+-    DEFAULT_REPLY = '{"category": "none", "score": 0, "rationale": "no match"}'
+-
+-    def __init__(self, replies: dict[str, str] | None = None, default: str = DEFAULT_REPLY):
+-        self.replies = dict(replies or {})
+-        self.default = default
+-        self.calls: list[str] = []
+-
+-    def complete(self, prompt, *, temperature=0.0, max_tokens=256):
+-        self.calls.append(temperature)
+-        return self.replies.get(prompt, self.default)
++    """
++    A very small in‑memory stub of the model gateway used in the test suite.
++
++    The real client would be passed a fully‑rendered prompt – a multi‑line
++    string containing categories, guidance, the request, etc.  In the tests we
++    frequently want to provide canned replies keyed only on the request text.
++    To make that convenient, ``FakeClient`` now matches *any* key that occurs
++    as a substring of the supplied prompt.  This retains the original behaviour
++    of an exact match while supporting the more compact test fixtures.
++    """
++
++    DEFAULT_REPLY = '{"category": "none", "score": 0, "rationale": "no match"}'
++
++    def __init__(self, replies: dict[str, str] | None = None, default: str = DEFAULT_REPLY):
++        # ``replies`` maps a request substring (or the full prompt) to a fake model reply.
++        self.replies = dict(replies or {})
++        self.default = default
++        # Record the temperature used for each call; tests only inspect the length.
++        self.calls: list[float] = []
++
++    def _find_reply(self, prompt: str) -> str:
++        """Return the first reply whose key is a substring of ``prompt``.
++
++        Exact matches are still honoured; if multiple keys match, the first one
++        in insertion order is used (consistent with ``dict`` ordering in Python 3.7+).
++        """
++        for key, reply in self.replies.items():
++            if key in prompt:
++                return reply
++        return self.default
++
++    def complete(self, prompt, *, temperature: float = 0.0, max_tokens: int = 256):
++        # Record the temperature for later inspection by the tests.
++        self.calls.append(temperature)
++        return self._find_reply(prompt)

@@ -1,0 +1,36 @@
+**Commit message:**
+```
+fix: correct elapsed time formatting and minor clean‑ups
+
+- Fixed `format_elapsed` to use a 60‑second minute base instead of 100.
+- Updated comment to clarify purpose.
+- Minor import adjustments for clarity.
+```
+
+**Diff:**
+```diff
+diff --git a/cotmon/reporting.py b/cotmon/reporting.py
+index ff0b8d8..b5d1f2e 100644
+--- a/cotmon/reporting.py
++++ b/cotmon/reporting.py
+@@
+ 
+ def format_elapsed(seconds: float) -> str:
+-    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
+-    minutes, remainder = divmod(int(seconds), 100)
+-    return f"{minutes}:{remainder:02d}"
++    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
++    # ``seconds`` are converted to integer minutes and remaining seconds.
++    # The original implementation mistakenly divided by 100, which broke
++    # the standard M:SS format for durations longer than a minute.
++    minutes, remainder = divmod(int(seconds), 60)
++    return f"{minutes}:{remainder:02d}"
+ 
+-
++
+ def write_summary_csv(summary, stream) -> None:
+     """Write deployment counts to a CSV stream for spreadsheet import."""
+     stream.write("deployment,scored,alerts,errors\n")
+     for name, stats in sorted(summary.per_deployment.items()):
+         stream.write(f"{name},{stats.scored},{stats.alerts},{stats.errors}\n")
+```

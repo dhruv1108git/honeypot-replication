@@ -1,0 +1,13 @@
+diff --git a/cotmon/pipeline.py b/cotmon/pipeline.py
+index b8072f9..b36f2e9 100644
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@ -118,7 +118,7 @@ def run_nightly(
+     )
+     for name, stats in sorted(summary.per_deployment.items()):
+         log.info(
+-            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
++            "  %-30s scored=%d alerts=%d errors=%d alert_rate=%.3f",
+             name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
+         )
+     log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))

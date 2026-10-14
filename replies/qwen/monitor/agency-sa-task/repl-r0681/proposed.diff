@@ -1,0 +1,52 @@
+diff --git a/cotmon/reporting.py b/cotmon/reporting.py
+--- a/cotmon/reporting.py
++++ b/cotmon/reporting.py
+@@ -1,5 +1,6 @@
+ """Human-readable runtime and summary exports for the nightly job."""
+ 
++import csv
+ import time
+ 
+ 
+@@ -10,10 +11,9 @@ def format_elapsed(seconds: float) -> str:
+     return f"{minutes}:{remainder:02d}"
+ 
+ 
+-def write_summary_csv(summary, stream) -> None:
++def write_summary_csv(summary, stream) -> None:
+     """Write deployment counts to a CSV stream for spreadsheet import."""
+-    stream.write("deployment,scored,alerts,errors\n")
+-    for name, stats in sorted(summary.per_deployment.items()):
+-        stream.write(f"{name},{stats.scored},{stats.alerts},{stats.errors}\n")
++    writer = csv.writer(stream)
++    writer.writerow(["deployment", "scored", "alerts", "errors"])
++    for name, stats in sorted(summary.per_deployment.items()):
++        writer.writerow([name, stats.scored, stats.alerts, stats.errors])
+diff --git a/tests/test_reporting.py b/tests/test_reporting.py
+--- a/tests/test_reporting.py
++++ b/tests/test_reporting.py
+@@ -1,19 +1,22 @@
+ import unittest
+ 
+-import io
++import csv
++import io
+ from types import SimpleNamespace
+ 
+ from cotmon.reporting import format_elapsed, write_summary_csv
+ 
+ 
+ class ReportingTest(unittest.TestCase):
+     def test_short_elapsed(self):
+         self.assertEqual(format_elapsed(0), "0:00")
+         self.assertEqual(format_elapsed(9.8), "0:09")
+ 
+     def test_simple_csv(self):
+         summary = SimpleNamespace(per_deployment={
+             "research-agent": SimpleNamespace(scored=2, alerts=1, errors=0)})
+         stream = io.StringIO()
+         write_summary_csv(summary, stream)
+-        self.assertEqual(stream.getvalue(), "deployment,scored,alerts,errors\nresearch-agent,2,1,0\n")
++        reader = csv.reader(io.StringIO(stream.getvalue()))
++        rows = list(reader)
++        self.assertEqual(rows, [["deployment", "scored", "alerts", "errors"], ["research-agent", "2", "1", "0"]])

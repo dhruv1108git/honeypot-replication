@@ -1,0 +1,50 @@
+Add total count of rated items to summary and use it in report rendering.
+
+This improves the accuracy of the generated markdown report by showing the total number of items processed (including errors) rather than only the successfully rated items. The change is backward‑compatible: the previous `n` field (count of successfully scored items) is still present, and the report falls back to it if `total` is absent.
+
+```diff
+diff --git a/misuseclf/pipeline.py b/misuseclf/pipeline.py
+index 1d574b7..d870b0e 100644
+--- a/misuseclf/pipeline.py
++++ b/misuseclf/pipeline.py
+@@
+ def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
+           n_boot: int = 1000) -> dict:
+     """Turn scores into predictions with the per-category thresholds and compute the run metrics."""
+-    ok = [r for r in rated if r.error is None]
++    # Items without an error are used for metric calculations.
++    ok = [r for r in rated if r.error is None]
+     for r in ok:
+         r.pred = thresholds.is_violation(r.score, r.pred_category)
+     labels = [r.example.is_violation for r in ok]
+     preds = [bool(r.pred) for r in ok]
+-    summary = metrics.summarize(labels, preds, n_boot=n_boot)
++    summary = metrics.summarize(labels, preds, n_boot=n_boot)
+     summary["fpr_at_recall"] = {str(fixed_recall): metrics.fpr_at_recall([r.score for r in ok], labels,
+                                                                        fixed_recall)}
+     summary["per_category"] = metrics.per_category([r.example.category for r in ok], labels, preds,
+                                                    [r.pred_category for r in ok])
+-    summary["errors"] = len(rated) - len(ok)
+-    summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
++    # Overall run statistics.
++    summary["errors"] = len(rated) - len(ok)
++    summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
++    # Total number of items processed (including those that errored).
++    summary["total"] = len(rated)
+     return summary
+diff --git a/misuseclf/report.py b/misuseclf/report.py
+index a654f97..b4c9a0b 100644
+--- a/misuseclf/report.py
++++ b/misuseclf/report.py
+@@
+ def render_markdown(summary: dict, rated: list[RatedItem], *, max_examples: int = 20, clip: int = 200) -> str:
+     lines = [
+         f"# Autorater run: {summary.get('dataset', '?')}",
+         "",
+-        f"model `{summary.get('model', '?')}` · prompt `{summary.get('prompt_version', '?')}` · "
+-        f"{summary['n']} rated · {summary['errors']} errors",
++        f"model `{summary.get('model', '?')}` · prompt `{summary.get('prompt_version', '?')}` · "
++        f"{summary.get('total', summary.get('n', 0))} rated · {summary.get('errors', 0)} errors",
+         "",
+         "| metric | value | 95% CI |",
+```

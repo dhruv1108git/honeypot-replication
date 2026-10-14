@@ -1,0 +1,29 @@
+diff --git a/cotmon/pipeline.py b/cotmon/pipeline.py
+index b8072f9..d1a2e4c 100644
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@ -42,7 +42,7 @@ class RunSummary:
+     def finalise(self) -> None:
+         for stats in self.per_deployment.values():
+-            stats.alert_rate = stats.alerts / self.scored if self.scored else 0.0
++            stats.alert_rate = stats.alerts / stats.scored if stats.scored else 0.0
+ 
+ 
+ def run_nightly(
+diff --git a/cotmon/scoring.py b/cotmon/scoring.py
+index 6eed82b..3a0c5d9 100644
+--- a/cotmon/scoring.py
++++ b/cotmon/scoring.py
+@@ -48,7 +48,10 @@ def build_request(
+ 
+ 
+ def normalise(raw: int) -> float:
+-    """Map a monitor score from the 1-10 scale onto [0, 1]."""
+-    return (raw - MIN_SCORE) / (MAX_SCORE - MIN_SCORE)
++    """Map a monitor score from the 1-10 scale onto [0, 1], clamped to the interval."""
++    value = (raw - MIN_SCORE) / (MAX_SCORE - MIN_SCORE)
++    # Ensure the value is strictly within [0, 1] despite floating point precision
++    return max(0.0, min(1.0, value))
+ 
+ 
+ def score_trajectory(traj: Trajectory, client, cfg: Config, system_prompt: str) -> TrajectoryResult:

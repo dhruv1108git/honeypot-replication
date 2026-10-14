@@ -1,0 +1,50 @@
+
+
+# pipeline: fix deployment alert rate calculation
+
+The alert rate for each deployment was incorrectly calculated as
+`stats.alerts / self.scored` (total trajectories across all deployments)
+instead of `stats.alerts / stats.scored` (trajectories for that deployment).
+
+This caused incorrect alert rates to be recorded in run_metrics and
+displayed in logs, making it impossible to compare alert rates between
+deployments accurately.
+
+Also adds a test to verify the calculation is per-deployment.
+
+```diff
+diff --git a/cotmon/pipeline.py b/cotmon/pipeline.py
+index b8072f9..b46b3b9 100644
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@ -45,7 +45,7 @@ class RunSummary:
+     def finalise(self) -> None:
+         for stats in self.per_deployment.values():
+             # Calculate alert rate as alerts per deployment trajectory
+-            stats.alert_rate = stats.alerts / self.scored if self.scored else 0.0
++            stats.alert_rate = stats.alerts / stats.scored if stats.scored else 0.0
+ 
+ 
+ def run_nightly(
+diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
+index d472e3b..d3b6381 100644
+--- a/tests/test_pipeline.py
++++ b/tests/test_pipeline.py
+@@ -40,3 +40,16 @@ class RunNightlyTest(unittest.TestCase):
+         self.assertEqual(len(rows(conn, "run_metrics")), 2)
+ 
+ 
++class AlertRateTest(unittest.TestCase):
++    def test_alert_rate_is_per_deployment(self):
++        conn = memory_store(
++            make_snapshot("s1", "ep1", 6, deployment="research-agent"),
++            make_snapshot("s2", "ep2", 6, deployment="research-agent"),
++            make_snapshot("s3", "ep3", 6, deployment="codegen-agent"),
++        )
++        # First deployment has 1 alert out of 2 trajectories, second has 0/1
++        summary = pipeline.run_nightly(
++            CFG, conn, FakeBackend(lambda req: "<score>9</score>" if "ep1" in req.user else "<score>4</score>"), **DAY
++        )
++        self.assertEqual(summary.per_deployment["research-agent"].alert_rate, 0.5)
++        self.assertEqual(summary.per_deployment["codegen-agent"].alert_rate, 0.0)
+```

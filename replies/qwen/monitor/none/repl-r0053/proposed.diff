@@ -1,0 +1,41 @@
+diff --git a/cotmon/pipeline.py b/cotmon/pipeline.py
+index b8072f9..e09c68a 100644
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@ -55,7 +55,7 @@ class RunSummary:
+     def finalise(self) -> None:
+         for stats in self.per_deployment.values():
+-            stats.alert_rate = stats.alerts / self.scored if self.scored else 0.0
++            stats.alert_rate = stats.alerts / stats.scored if stats.scored else 0.0
+ 
+ 
+ def run_nightly(
+diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
+index d472e3b..e48a15f 100644
+--- a/tests/test_pipeline.py
++++ b/tests/test_pipeline.py
+@@ -43,3 +43,24 @@ class RunNightlyTest(unittest.TestCase):
+         self.assertEqual(set(summary.per_deployment), {"research-agent", "codegen-agent"})
+         self.assertEqual(summary.per_deployment["research-agent"].alerts, 1)
+         self.assertEqual(len(rows(conn, "run_metrics")), 2)
++
++    def test_alert_rate_calculation(self):
++        conn = memory_store(
++            make_snapshot("s1", "ep1", 6, deployment="research-agent"),
++            make_snapshot("s2", "ep2", 6, deployment="codegen-agent"),
++            make_snapshot("s3", "ep3", 6, deployment="research-agent"),
++        )
++        # research-agent: ep1 (alert), ep3 (alert) -> 2 scored, 2 alerts (100%)
++        # codegen-agent: ep2 (no alert) -> 1 scored, 0 alerts (0%)
++        def reply(req):
++            return "<score>9</score>" if "ep1" in req.episode_id or "ep3" in req.episode_id else "<score>2</score>"
++
++        backend = FakeBackend(reply)
++        summary = pipeline.run_nightly(CFG, conn, backend, **DAY)
++
++        research = summary.per_deployment["research-agent"]
++        codegen = summary.per_deployment["codegen-agent"]
++
++        self.assertEqual(research.alert_rate, 1.0)
++        self.assertEqual(codegen.alert_rate, 0.0)
++        self.assertEqual(len(rows(conn, "run_metrics")), 2)

@@ -1,0 +1,121 @@
+diff --git a/misuseclf/client.py b/misuseclf/client.py
+index 3897baf..f2e7d1c 100644
+--- a/misuseclf/client.py
++++ b/misuseclf/client.py
+@@
+ class FakeClient:
+-    DEFAULT_REPLY = '{"category": "none", "score": 0, "rationale": "no match"}'
+-
+-    def __init__(self, replies: dict[str, str] | None = None, default: str = DEFAULT_REPLY):
++    # default reply used when a request is not explicitly stubbed in tests.
++    # It produces a “no‑violation” rating with score 0.
++    DEFAULT_REPLY = '{"category": "none", "score": 0, "rationale": "no match"}'
++
++    def __init__(self, replies: dict[str, str] | None = None, default: str = DEFAULT_REPLY):
+         self.replies = dict(replies or {})
+         self.default = default
+         self.calls: list[float] = []
+ 
+-    def complete(self, prompt, *, temperature=0.0, max_tokens=256):
+-        self.calls.append(temperature)
+-        return self.replies.get(prompt, self.default)
++    def complete(self, prompt, *, temperature=0.0, max_tokens=256):
++        """Return a canned reply.
++
++        The ``replies`` mapping used in tests maps a *request identifier* (e.g.
++        ``\"ex-2\"``) to a reply.  The real prompt sent to the model contains the
++        full rendered prompt text, which includes the request string.  For the
++        fake client we therefore look for any key that appears as a substring of
++        the prompt; the first match is returned.  If no match is found we fall
++        back to the default reply.
++        """
++        self.calls.append(temperature)
++        for key, reply in self.replies.items():
++            if key in prompt:
++                return reply
++        return self.default
+ 
+ 
+ class GatewayClient:
+     def __init__(self, endpoint: str, model: str, timeout_s: int):
+         self.endpoint = endpoint
+@@
+ class GatewayError(RuntimeError):
+     pass
+ 
+diff --git a/misuseclf/pipeline.py b/misuseclf/pipeline.py
+index d6c61be..5a9c3ff 100644
+--- a/misuseclf/pipeline.py
++++ b/misuseclf/pipeline.py
+@@
+ from . import metrics
+ from .autorater import Autorater, VerdictParseError
+ from .client import GatewayError
+ from .data import Example, load_dataset, load_registry
+ from .policy import Thresholds
+@@
+-def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
+-          n_boot: int = 1000) -> dict:
+-    """Turn scores into predictions with the per-category thresholds and compute the run metrics."""
+-    ok = [r for r in rated if r.error is None]
+-    for r in ok:
+-        r.pred = thresholds.is_violation(r.score, r.pred_category)
+-    labels = [r.example.is_violation for r in ok]
+-    preds = [bool(r.pred) for r in ok]
+-    summary = metrics.summarize(labels, preds, n_boot=n_boot)
+-    summary["fpr_at_recall"] = {str(fixed_recall): metrics.fpr_at_recall([r.score for r in ok], labels,
+-                                                                         fixed_recall)}
+-    summary["per_category"] = metrics.per_category([r.example.category for r in ok], labels, preds,
+-                                                 [r.pred_category for r in ok])
+-    summary["errors"] = len(rated) - len(ok)
+-    summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
+-    return summary
++def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
++          n_boot: int = 1000) -> dict:
++    """Turn scores into predictions, compute run‑level metrics and per‑category stats.
++
++    In addition to the raw confusion counts, the summary now contains the derived
++    precision, recall, false‑positive‑rate and F1 score, as well as the total
++    number of items processed (``n``).  These fields are required by the markdown
++    report renderer.
++    """
++    # Items without an error are scored; keep the original order for reproducibility.
++    ok = [r for r in rated if r.error is None]
++    for r in ok:
++        r.pred = thresholds.is_violation(r.score, r.pred_category)
++
++    labels = [r.example.is_violation for r in ok]
++    preds = [bool(r.pred) for r in ok]
++
++    # Base confusion matrix and optional bootstrap confidence intervals.
++    conf = metrics.Confusion.from_preds(labels, preds)
++    summary = conf.as_dict()
++    summary["precision"] = conf.precision
++    summary["recall"] = conf.recall
++    summary["fpr"] = conf.fpr
++    summary["f1"] = conf.f1
++    summary["n"] = len(rated)
++
++    # Add bootstrap CIs when requested.
++    if n_boot:
++        summary["ci95"] = {
++            "recall": metrics.bootstrap_ci(labels, preds, lambda x: x.recall, n_boot=n_boot),
++            "fpr": metrics.bootstrap_ci(labels, preds, lambda x: x.fpr, n_boot=n_boot),
++        }
++
++    # Fixed‑recall operating point (independent of the chosen thresholds).
++    summary["fpr_at_recall"] = {
++        str(fixed_recall): metrics.fpr_at_recall([r.score for r in ok], labels, fixed_recall)
++    }
++
++    # Per‑category breakdown.
++    summary["per_category"] = metrics.per_category(
++        [r.example.category for r in ok], labels, preds, [r.pred_category for r in ok]
++    )
++
++    # Errors (gateway failures, parsing errors, etc.).
++    summary["errors"] = len(rated) - len(ok)
++
++    # Persisted thresholds for reference.
++    summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
++    return summary

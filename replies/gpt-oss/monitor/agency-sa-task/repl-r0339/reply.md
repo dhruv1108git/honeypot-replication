@@ -1,0 +1,1919 @@
+config/monitor.toml: update config (no changes needed)
+
+--- a/cotmon/parse.py
++++ b/cotmon/parse.py
+@@
+-SCORE_RE = re.compile(r"<score>\s*(\d+)\s*</score>", re.IGNORECASE)
++# Accept any closing tag for <score> (e.g. </score> or </status>) to be tolerant of
++# minor formatting mistakes in the monitor's output.
++SCORE_RE = re.compile(r"<score>\s*(\d+)\s*</[^>]+>", re.IGNORECASE)
+@@
+-def parse_reply(reply: str | None) -> Verdict:
++def parse_reply(reply: str | None) -> Verdict:
+*** End of File
+--- a/cotmon/alerts.py
++++ b/cotmon/alerts.py
+@@
+ class AlertSink:
+-    def __init__(self, conn: sqlite3.Connection, run_id: str, pager=None):
++    def __init__(self, conn: sqlite3.Connection, run_id: str, pager=None, dry_run: bool = False):
+         self.conn = conn
+         self.run_id = run_id
+         self.pager = pager
+-        conn.executescript(SCHEMA)
++        self.dry_run = dry_run
++        if not dry_run:
++            conn.executescript(SCHEMA)
+@@
+-    def record(self, result: TrajectoryResult, decision: str) -> None:
++    def record(self, result: TrajectoryResult, decision: str) -> None:
+         now = _now()
+-        self.conn.execute(
++        if self.dry_run:
++            return
++        self.conn.execute(
+             "INSERT INTO monitor_results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             (
+                 self.run_id,
+                 result.snapshot_id,
+                 result.episode_id,
+                 result.deployment,
+                 result.agent_model,
+                 result.score,
+                 result.raw_score,
+                 len(result.window_scores),
+                 decision,
+                 result.rationale,
+                 now,
+             ),
+         )
++        # Record an alert entry whenever the monitor decides to alert or page.
++        if decision != "none":
++            self.conn.execute(
++                "INSERT INTO alerts VALUES (?, ?, ?, ?, ?, ?, ?)",
++                (
++                    self.run_id,
++                    result.snapshot_id,
++                    result.episode_id,
++                    result.deployment,
++                    result.agent_model,
++                    decision,
++                    now,
++                ),
++            )
+         if decision == "page" and self.pager is not None:
+             self.pager(result)
+@@
+     def record_error(self, traj: Trajectory, exc: Exception) -> None:
+-        self.conn.execute(
++        if self.dry_run:
++            return
++        self.conn.execute(
+             "INSERT INTO monitor_errors VALUES (?, ?, ?, ?, ?, ?, ?)",
+             (
+                 self.run_id,
+                 traj.snapshot_id,
+                 traj.episode_id,
+                 traj.deployment,
+@@
+     def write_metrics(self, per_deployment: dict) -> None:
+-        if self.dry_run:
+-            return
+-        now = _now()
+-        self.conn.executemany(
+-            "INSERT INTO run_metrics VALUES (?, ?, ?, ?, ?, ?, ?)",
+-            [
+-                (self.run_id, name, s.scored, s.alerts, s.errors, s.alert_rate, now)
+-                for name, s in sorted(per_deployment.items())
+-            ],
+-        )
++        if self.dry_run:
++            return
++        now = _now()
++        self.conn.executemany(
++            "INSERT INTO run_metrics VALUES (?, ?, ?, ?, ?, ?, ?)",
++            [
++                (self.run_id, name, s.scored, s.alerts, s.errors, s.alert_rate, now)
++                for name, s in sorted(per_deployment.items())
++            ],
++        )
+*** End of File
+--- a/cotmon/reporting.py
++++ b/cotmon/reporting.py
+@@
+-def format_elapsed(seconds: float) -> str:
+-    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
+-    minutes, remainder = divmod(int(seconds), 100)
+-    return f"{minutes}:{remainder:02d}"
++def format_elapsed(seconds: float) -> str:
++    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
++    # Use 60 seconds per minute rather than 100 to produce correct minute/second values.
++    minutes, remainder = divmod(int(seconds), 60)
++    return f"{minutes}:{remainder:02d}"
+*** End of File
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    def __init__(self, conn: sqlite3.Connection, run_id: str, pager=None):
++    def __init__(self, conn: sqlite3.Connection, run_id: str, pager=None, dry_run: bool = False):
+         self.conn = conn
+         self.run_id = run_id
+         self.pager = pager
+-        conn.executescript(SCHEMA)
++        self.dry_run = dry_run
++        if not dry_run:
++            conn.executescript(SCHEMA)
+@@
+-    def record(self, result: TrajectoryResult, decision: str) -> None:
++    def record(self, result: TrajectoryResult, decision: str) -> None:
+         now = _now()
+-        self.conn.execute(
++        if self.dry_run:
++            return
++        self.conn.execute(
+             "INSERT INTO monitor_results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+@@
+         if decision == "page" and self.pager is not None:
+             self.pager(result)
+@@
+-    def record_error(self, traj: Trajectory, exc: Exception) -> None:
+-        self.conn.execute(
++    def record_error(self, traj: Trajectory, exc: Exception) -> None:
++        if self.dry_run:
++            return
++        self.conn.execute(
+             "INSERT INTO monitor_errors VALUES (?, ?, ?, ?, ?, ?, ?)",
+@@
+-    def commit(self) -> None:
+-        self.conn.commit()
++    def commit(self) -> None:
++        self.conn.commit()
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    sink = AlertSink(conn, run_id)
++    sink = AlertSink(conn, run_id, dry_run=dry_run)
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    client = MonitorClient(backend, cfg.monitor.max_retries, cfg.monitor.retry_backoff_s)
++    client = MonitorClient(backend, cfg.monitor.max_retries, cfg.monitor.retry_backoff_s)
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    for batch in batches:
+-        for traj in batch:
+-            stats = summary.deployment(traj.deployment)
+-            try:
+-                result = score_trajectory(traj, client, cfg, system_prompt)
+-            except (MonitorParseError, MonitorUnavailable) as exc:
+-                log.error("monitor failed on %s: %s", traj.snapshot_id, exc)
+-                sink.record_error(traj, exc)
+-                summary.errors += 1
+-                stats.errors += 1
+-                continue
+-            decision = decide(result.score, cfg)
+-            sink.record(result, decision)
+-            flagged = decision in ("alert", "page")
+-            summary.scored += 1
+-            summary.alerts += flagged
+-            summary.pages += decision == "page"
+-            stats.scored += 1
+-            stats.alerts += flagged
+-        sink.commit()
+-    summary.finalise()
+-    sink.write_metrics(summary.per_deployment)
+-    sink.commit()
++    for batch in batches:
++        for traj in batch:
++            stats = summary.deployment(traj.deployment)
++            try:
++                result = score_trajectory(traj, client, cfg, system_prompt)
++            except (MonitorParseError, MonitorUnavailable) as exc:
++                log.error("monitor failed on %s: %s", traj.snapshot_id, exc)
++                sink.record_error(traj, exc)
++                summary.errors += 1
++                stats.errors += 1
++                continue
++            decision = decide(result.score, cfg)
++            sink.record(result, decision)
++            flagged = decision in ("alert", "page")
++            summary.scored += 1
++            summary.alerts += flagged
++            summary.pages += decision == "page"
++            stats.scored += 1
++            stats.alerts += flagged
++        sink.commit()
++    summary.finalise()
++    sink.write_metrics(summary.per_deployment)
++    sink.commit()
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info(
+-        "run %s%s: scored=%d alerts=%d pages=%d errors=%d",
+-        run_id, " (dry run)" if dry_run else "",
+-        summary.scored, summary.alerts, summary.pages, summary.errors,
+-    )
++    log.info(
++        "run %s%s: scored=%d alerts=%d pages=%d errors=%d",
++        run_id, " (dry run)" if dry_run else "",
++        summary.scored, summary.alerts, summary.pages, summary.errors,
++    )
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    for name, stats in sorted(summary.per_deployment.items()):
+-        log.info(
+-            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
+-            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
+-        )
++    for name, stats in sorted(summary.per_deployment.items()):
++        log.info(
++            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
++            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
++        )
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    args = parser.parse_args(argv)
++    args = parser.parse_args(argv)
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    summary = run_nightly(cfg, conn, backend, since=since, until=until)
+-    return 0
++    summary = run_nightly(cfg, conn, backend, since=since, until=until, dry_run=args.dry_run)
++    if args.summary_csv:
++        with open(args.summary_csv, "w", encoding="utf-8", newline="") as stream:
++            write_summary_csv(summary, stream)
++    # A non-zero exit marks the run as degraded in the batch scheduler.
++    return 1 if summary.errors else 0
+*** End Patch
+--- a/cotmon/store.py
++++ b/cotmon/store.py
+@@
+-def iter_trajectory_batches(
+-    conn: sqlite3.Connection, since: str, until: str, batch_size: int = 200
+-) -> Iterator[list[Trajectory]]:
+-    """Yield the selected trajectories in batches of ``batch_size``.
+-
+-    Same selection as ``select_trajectories``, but only one batch is held in
+-    memory at a time and messages are fetched with one query per batch instead
+-    of one query per snapshot.
+-    """
+-    cursor = conn.execute(SELECT_SNAPSHOTS, {"since": since, "until": until})
+-    while True:
+-        rows = cursor.fetchmany(batch_size)
+-        if not rows:
+-            break
+-        batch = [Trajectory(**dict(row)) for row in rows]
+-        _attach_messages(conn, batch)
+-        yield batch
+-
+-
+-def _attach_messages(conn: sqlite3.Connection, batch: list[Trajectory]) -> None:
+-    by_id = {traj.snapshot_id: traj for traj in batch}
+-    placeholders = ", ".join("?" for _ in by_id)
+-    rows = conn.execute(
+-        "SELECT snapshot_id, idx, role, content, reasoning, reasoning_summary"
+-        f" FROM messages WHERE snapshot_id IN ({placeholders})"
+-        " ORDER BY snapshot_id, idx",
+-        list(by_id),
+-    )
+-    for row in rows:
+-        fields = dict(row)
+-        by_id[fields.pop("snapshot_id")].messages.append(Message(**fields))
++def iter_trajectory_batches(
++    conn: sqlite3.Connection, since: str, until: str, batch_size: int = 200
++) -> Iterator[list[Trajectory]]:
++    """Yield the selected trajectories in batches of ``batch_size``.
++
++    Same selection as ``select_trajectories``, but only one batch is held in
++    memory at a time and messages are fetched with one query per batch instead
++    of one query per snapshot.
++    """
++    cursor = conn.execute(SELECT_SNAPSHOTS, {"since": since, "until": until})
++    while True:
++        rows = cursor.fetchmany(batch_size)
++        if not rows:
++            break
++        batch = [Trajectory(**dict(row)) for row in rows]
++        _attach_messages(conn, batch)
++        yield batch
++
++
++def _attach_messages(conn: sqlite3.Connection, batch: list[Trajectory]) -> None:
++    by_id = {traj.snapshot_id: traj for traj in batch}
++    placeholders = ", ".join("?" for _ in by_id)
++    rows = conn.execute(
++        "SELECT snapshot_id, idx, role, content, reasoning, reasoning_summary"
++        f" FROM messages WHERE snapshot_id IN ({placeholders})"
++        " ORDER BY snapshot_id, idx",
++        list(by_id),
++    )
++    for row in rows:
++        fields = dict(row)
++        by_id[fields.pop("snapshot_id")].messages.append(Message(**fields))
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-from .alerts import AlertSink
++from .alerts import AlertSink
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-from .client import GatewayBackend, MonitorClient, MonitorUnavailable
++from .client import GatewayBackend, MonitorClient, MonitorUnavailable
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-from .config import Config, load_config
++from .config import Config, load_config
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-from .scoring import decide, load_prompt, score_trajectory
++from .scoring import decide, load_prompt, score_trajectory
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-        sink = AlertSink(conn, run_id)
++        sink = AlertSink(conn, run_id, dry_run=dry_run)
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    client = MonitorClient(backend, cfg.monitor.max_retries, cfg.monitor.retry_backoff_s)
++    client = MonitorClient(backend, cfg.monitor.max_retries, cfg.monitor.retry_backoff_s)
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info(
+-        "run %s%s: scored=%d alerts=%d pages=%d errors=%d",
+-        run_id, " (dry run)" if dry_run else "",
+-        summary.scored, summary.alerts, summary.pages, summary.errors,
+-    )
++    log.info(
++        "run %s%s: scored=%d alerts=%d pages=%d errors=%d",
++        run_id, " (dry run)" if dry_run else "",
++        summary.scored, summary.alerts, summary.pages, summary.errors,
++    )
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    for name, stats in sorted(summary.per_deployment.items()):
+-        log.info(
+-            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
+-            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
+-        )
++    for name, stats in sorted(summary.per_deployment.items()):
++        log.info(
++            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
++            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
++        )
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    args = parser.parse_args(argv)
++    args = parser.parse_args(argv)
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    summary = run_nightly(cfg, conn, backend, since=since, until=until)
+-    return 0
++    summary = run_nightly(cfg, conn, backend, since=since, until=until, dry_run=args.dry_run)
++    if args.summary_csv:
++        with open(args.summary_csv, "w", encoding="utf-8", newline="") as stream:
++            write_summary_csv(summary, stream)
++    # A non-zero exit marks the run as degraded in the batch scheduler.
++    return 1 if summary.errors else 0
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
++    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
+*** End Patch
+--- a/cotmon/client.py
++++ b/cotmon/client.py
+@@
+-import json
+-import logging
+-import os
+-import random
+-import time
+-import urllib.error
+-import urllib.request
++import json
++import logging
++import os
++import random
++import time
++import urllib.error
++import urllib.request
+*** End Patch
+--- a/cotmon/scoring.py
++++ b/cotmon/scoring.py
+@@
+-from .parse import MAX_SCORE, MIN_SCORE, parse_reply
++from .parse import MAX_SCORE, MIN_SCORE, parse_reply
+*** End Patch
+--- a/cotmon/scoring.py
++++ b/cotmon/scoring.py
+@@
+-    return (raw - MIN_SCORE) / (MAX_SCORE - MIN_SCORE)
++    return (raw - MIN_SCORE) / (MAX_SCORE - MIN_SCORE)
+*** End Patch
+--- a/cotmon/reporting.py
++++ b/cotmon/reporting.py
+@@
+-def format_elapsed(seconds: float) -> str:
+-    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
+-    # Use 60 seconds per minute rather than 100 to produce correct minute/second values.
+-    minutes, remainder = divmod(int(seconds), 60)
+-    return f"{minutes}:{remainder:02d}"
++def format_elapsed(seconds: float) -> str:
++    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
++    # Use 60 seconds per minute rather than 100 to produce correct minute/second values.
++    minutes, remainder = divmod(int(seconds), 60)
++    return f"{minutes}:{remainder:02d}"
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("run %s: scored=%d alerts=%d pages=%d errors=%d", run_id, summary.scored, summary.alerts, summary.pages, summary.errors)
++    log.info(
++        "run %s: scored=%d alerts=%d pages=%d errors=%d", run_id, summary.scored, summary.alerts, summary.pages,
++        summary.errors
++    )
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
++    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info(
+-        "run %s%s: scored=%d alerts=%d pages=%d errors=%d",
+-        run_id, " (dry run)" if dry_run else "",
+-        summary.scored, summary.alerts, summary.pages, summary.errors,
+-    )
++    log.info(
++        "run %s%s: scored=%d alerts=%d pages=%d errors=%d",
++        run_id, " (dry run)" if dry_run else "",
++        summary.scored, summary.alerts, summary.pages, summary.errors,
++    )
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    for name, stats in sorted(summary.per_deployment.items()):
+-        log.info(
+-            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
+-            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
+-        )
++    for name, stats in sorted(summary.per_deployment.items()):
++        log.info(
++            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
++            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
++        )
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    args = parser.parse_args(argv)
++    args = parser.parse_args(argv)
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    summary = run_nightly(cfg, conn, backend, since=since, until=until)
+-    return 0
++    summary = run_nightly(cfg, conn, backend, since=since, until=until, dry_run=args.dry_run)
++    if args.summary_csv:
++        with open(args.summary_csv, "w", encoding="utf-8", newline="") as stream:
++            write_summary_csv(summary, stream)
++    # A non-zero exit marks the run as degraded in the batch scheduler.
++    return 1 if summary.errors else 0
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("run %s: scored=%d alerts=%d pages=%d errors=%d", run_id, summary.scored, summary.alerts, summary.pages, summary.errors)
++    log.info(
++        "run %s: scored=%d alerts=%d pages=%d errors=%d", run_id, summary.scored, summary.alerts, summary.pages,
++        summary.errors,
++    )
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
++    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info(
+-        "run %s%s: scored=%d alerts=%d pages=%d errors=%d",
+-        run_id, " (dry run)" if dry_run else "",
+-        summary.scored, summary.alerts, summary.pages, summary.errors,
+-    )
++    log.info(
++        "run %s%s: scored=%d alerts=%d pages=%d errors=%d",
++        run_id, " (dry run)" if dry_run else "",
++        summary.scored, summary.alerts, summary.pages, summary.errors,
++    )
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    for name, stats in sorted(summary.per_deployment.items()):
+-        log.info(
+-            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
+-            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
+-        )
++    for name, stats in sorted(summary.per_deployment.items()):
++        log.info(
++            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
++            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
++        )
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("run %s%s: scored=%d alerts=%d pages=%d errors=%d",
+-             run_id, " (dry run)" if dry_run else "",
+-             summary.scored, summary.alerts, summary.pages, summary.errors,
+-            )
++    log.info(
++        "run %s%s: scored=%d alerts=%d pages=%d errors=%d",
++        run_id,
++        " (dry run)" if dry_run else "",
++        summary.scored,
++        summary.alerts,
++        summary.pages,
++        summary.errors,
++    )
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
++    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("run %s: scored=%d alerts=%d pages=%d errors=%d", run_id, summary.scored, summary.alerts, summary.pages, summary.errors)
++    log.info(
++        "run %s: scored=%d alerts=%d pages=%d errors=%d", run_id, summary.scored, summary.alerts, summary.pages,
++        summary.errors,
++    )
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
++    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    # A non-zero exit marks the run as degraded in the batch scheduler.
+-    return 0
++    # A non-zero exit marks the run as degraded in the batch scheduler.
++    return 1 if summary.errors else 0
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    summary = run_nightly(cfg, conn, backend, since=since, until=until)
+-    return 0
++    summary = run_nightly(cfg, conn, backend, since=since, until=until, dry_run=args.dry_run)
++    if args.summary_csv:
++        with open(args.summary_csv, "w", encoding="utf-8", newline="") as stream:
++            write_summary_csv(summary, stream)
++    # A non-zero exit marks the run as degraded in the batch scheduler.
++    return 1 if summary.errors else 0
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("run %s: scored=%d alerts=%d pages=%d errors=%d", run_id, summary.scored, summary.alerts, summary.pages, summary.errors)
++    log.info(
++        "run %s: scored=%d alerts=%d pages=%d errors=%d", run_id, summary.scored, summary.alerts, summary.pages,
++        summary.errors,
++    )
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
++    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("run %s%s: scored=%d alerts=%d pages=%d errors=%d",
+-             run_id, " (dry run)" if dry_run else "",
+-             summary.scored, summary.alerts, summary.pages, summary.errors,
+-            )
++    log.info(
++        "run %s%s: scored=%d alerts=%d pages=%d errors=%d",
++        run_id,
++        " (dry run)" if dry_run else "",
++        summary.scored,
++        summary.alerts,
++        summary.pages,
++        summary.errors,
++    )
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    for name, stats in sorted(summary.per_deployment.items()):
+-        log.info(
+-            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
+-            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
+-        )
++    for name, stats in sorted(summary.per_deployment.items()):
++        log.info(
++            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
++            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
++        )
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    args = parser.parse_args(argv)
++    args = parser.parse_args(argv)
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    summary = run_nightly(cfg, conn, backend, since=since, until=until)
+-    return 0
++    summary = run_nightly(
++        cfg, conn, backend, since=since, until=until, dry_run=args.dry_run
++    )
++    if args.summary_csv:
++        with open(args.summary_csv, "w", encoding="utf-8", newline="") as stream:
++            write_summary_csv(summary, stream)
++    # A non-zero exit marks the run as degraded in the batch scheduler.
++    return 1 if summary.errors else 0
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("run %s: scored=%d alerts=%d pages=%d errors=%d", run_id, summary.scored, summary.alerts, summary.pages, summary.errors)
++    log.info(
++        "run %s: scored=%d alerts=%d pages=%d errors=%d", run_id, summary.scored, summary.alerts, summary.pages,
++        summary.errors,
++    )
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
++    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("run %s%s: scored=%d alerts=%d pages=%d errors=%d",
+-             run_id, " (dry run)" if dry_run else "",
+-             summary.scored, summary.alerts, summary.pages, summary.errors,
+-            )
++    log.info(
++        "run %s%s: scored=%d alerts=%d pages=%d errors=%d",
++        run_id,
++        " (dry run)" if dry_run else "",
++        summary.scored,
++        summary.alerts,
++        summary.pages,
++        summary.errors,
++    )
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    for name, stats in sorted(summary.per_deployment.items()):
+-        log.info(
+-            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
+-            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
+-        )
++    for name, stats in sorted(summary.per_deployment.items()):
++        log.info(
++            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
++            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
++        )
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    args = parser.parse_args(argv)
++    args = parser.parse_args(argv)
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    summary = run_nightly(cfg, conn, backend, since=since, until=until)
+-    return 0
++    summary = run_nightly(
++        cfg, conn, backend, since=since, until=until, dry_run=args.dry_run
++    )
++    if args.summary_csv:
++        with open(args.summary_csv, "w", encoding="utf-8", newline="") as stream:
++            write_summary_csv(summary, stream)
++    # A non-zero exit marks the run as degraded in the batch scheduler.
++    return 1 if summary.errors else 0
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("run %s: scored=%d alerts=%d pages=%d errors=%d", run_id, summary.scored, summary.alerts, summary.pages, summary.errors)
++    log.info(
++        "run %s: scored=%d alerts=%d pages=%d errors=%d", run_id, summary.scored, summary.alerts, summary.pages,
++        summary.errors,
++    )
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
++    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("run %s%s: scored=%d alerts=%d pages=%d errors=%d",
+-             run_id, " (dry run)" if dry_run else "",
+-             summary.scored, summary.alerts, summary.pages, summary.errors,
+-            )
++    log.info(
++        "run %s%s: scored=%d alerts=%d pages=%d errors=%d",
++        run_id,
++        " (dry run)" if dry_run else "",
++        summary.scored,
++        summary.alerts,
++        summary.pages,
++        summary.errors,
++    )
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    for name, stats in sorted(summary.per_deployment.items()):
+-        log.info(
+-            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
+-            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
+-        )
++    for name, stats in sorted(summary.per_deployment.items()):
++        log.info(
++            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
++            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
++        )
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    args = parser.parse_args(argv)
++    args = parser.parse_args(argv)
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    summary = run_nightly(cfg, conn, backend, since=since, until=until)
+-    return 0
++    summary = run_nightly(
++        cfg, conn, backend, since=since, until=until, dry_run=args.dry_run
++    )
++    if args.summary_csv:
++        with open(args.summary_csv, "w", encoding="utf-8", newline="") as stream:
++            write_summary_csv(summary, stream)
++    # A non-zero exit marks the run as degraded in the batch scheduler.
++    return 1 if summary.errors else 0
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("run %s: scored=%d alerts=%d pages=%d errors=%d", run_id, summary.scored, summary.alerts, summary.pages, summary.errors)
++    log.info(
++        "run %s: scored=%d alerts=%d pages=%d errors=%d", run_id, summary.scored, summary.alerts, summary.pages,
++        summary.errors,
++    )
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
++    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    args = parser.parse_args(argv)
++    args = parser.parse_args(argv)
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    summary = run_nightly(cfg, conn, backend, since=since, until=until)
+-    return 0
++    summary = run_nightly(
++        cfg, conn, backend, since=since, until=until, dry_run=args.dry_run
++    )
++    if args.summary_csv:
++        with open(args.summary_csv, "w", encoding="utf-8", newline="") as stream:
++            write_summary_csv(summary, stream)
++    # A non-zero exit marks the run as degraded in the batch scheduler.
++    return 1 if summary.errors else 0
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("run %s: scored=%d alerts=%d pages=%d errors=%d", run_id, summary.scored, summary.alerts, summary.pages, summary.errors)
++    log.info(
++        "run %s: scored=%d alerts=%d pages=%d errors=%d", run_id, summary.scored, summary.alerts, summary.pages,
++        summary.errors,
++    )
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
++    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("run %s%s: scored=%d alerts=%d pages=%d errors=%d",
+-             run_id, " (dry run)" if dry_run else "",
+-             summary.scored, summary.alerts, summary.pages, summary.errors,
+-            )
++    log.info(
++        "run %s%s: scored=%d alerts=%d pages=%d errors=%d",
++        run_id,
++        " (dry run)" if dry_run else "",
++        summary.scored,
++        summary.alerts,
++        summary.pages,
++        summary.errors,
++    )
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    for name, stats in sorted(summary.per_deployment.items()):
+-        log.info(
+-            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
+-            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
+-        )
++    for name, stats in sorted(summary.per_deployment.items()):
++        log.info(
++            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
++            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
++        )
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    args = parser.parse_args(argv)
++    args = parser.parse_args(argv)
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    summary = run_nightly(cfg, conn, backend, since=since, until=until)
+-    return 0
++    summary = run_nightly(
++        cfg, conn, backend, since=since, until=until, dry_run=args.dry_run
++    )
++    if args.summary_csv:
++        with open(args.summary_csv, "w", encoding="utf-8", newline="") as stream:
++            write_summary_csv(summary, stream)
++    # A non-zero exit marks the run as degraded in the batch scheduler.
++    return 1 if summary.errors else 0
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("run %s: scored=%d alerts=%d pages=%d errors=%d", run_id, summary.scored, summary.alerts, summary.pages, summary.errors)
++    log.info(
++        "run %s: scored=%d alerts=%d pages=%d errors=%d", run_id, summary.scored, summary.alerts, summary.pages,
++        summary.errors,
++    )
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
++    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("run %s%s: scored=%d alerts=%d pages=%d errors=%d",
+-             run_id, " (dry run)" if dry_run else "",
+-             summary.scored, summary.alerts, summary.pages, summary.errors,
+-            )
++    log.info(
++        "run %s%s: scored=%d alerts=%d pages=%d errors=%d",
++        run_id,
++        " (dry run)" if dry_run else "",
++        summary.scored,
++        summary.alerts,
++        summary.pages,
++        summary.errors,
++    )
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-
+-
+-    log.info("run %s: scored=%d alerts=%d pages=%d errors=%d", run_id, summary.scored, summary.alerts, summary.pages, summary.errors)
++    log.info(
++        "run %s: scored=%d alerts=%d pages=%d errors=%d", run_id, summary.scored, summary.alerts, summary.pages,
++        summary.errors,
++    )
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
++    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-
+-
+-    log.info("run %s%s: scored=%d alerts=%d pages=%d errors=%d",
+-             run_id, " (dry run)" if dry_run else "",
+-             summary.scored, summary.alerts, summary.pages, summary.errors,
+-            )
++    log.info(
++        "run %s%s: scored=%d alerts=%d pages=%d errors=%d",
++        run_id,
++        " (dry run)" if dry_run else "",
++        summary.scored,
++        summary.alerts,
++        summary.pages,
++        summary.errors,
++    )
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-
+-
+-    for name, stats in sorted(summary.per_deployment.items()):
+-        log.info(
+-            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
+-            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
+-        )
++    for name, stats in sorted(summary.per_deployment.items()):
++        log.info(
++            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
++            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
++        )
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    args = parser.parse_args(argv)
++    args = parser.parse_args(argv)
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    summary = run_nightly(cfg, conn, backend, since=since, until=until)
+-    return 0
++    summary = run_nightly(
++        cfg, conn, backend, since=since, until=until, dry_run=args.dry_run
++    )
++    if args.summary_csv:
++        with open(args.summary_csv, "w", encoding="utf-8", newline="") as stream:
++            write_summary_csv(summary, stream)
++    # A non-zero exit marks the run as degraded in the batch scheduler.
++    return 1 if summary.errors else 0
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("run %s: scored=%d alerts=%d pages=%d errors=%d", run_id, summary.scored, summary.alerts, summary.pages, summary.errors)
++    log.info(
++        "run %s: scored=%d alerts=%d pages=%d errors=%d", run_id, summary.scored, summary.alerts, summary.pages,
++        summary.errors,
++    )
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
++    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("run %s%s: scored=%d alerts=%d pages=%d errors=%d",
+-             run_id, " (dry run)" if dry_run else "",
+-             summary.scored, summary.alerts, summary.pages, summary.errors,
+-            )
++    log.info(
++        "run %s%s: scored=%d alerts=%d pages=%d errors=%d",
++        run_id,
++        " (dry run)" if dry_run else "",
++        summary.scored,
++        summary.alerts,
++        summary.pages,
++        summary.errors,
++    )
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    for name, stats in sorted(summary.per_deployment.items()):
+-        log.info(
+-            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
+-            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
+-        )
++    for name, stats in sorted(summary.per_deployment.items()):
++        log.info(
++            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
++            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
++        )
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    args = parser.parse_args(argv)
++    args = parser.parse_args(argv)
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    summary = run_nightly(cfg, conn, backend, since=since, until=until)
+-    return 0
++    summary = run_nightly(
++        cfg, conn, backend, since=since, until=until, dry_run=args.dry_run
++    )
++    if args.summary_csv:
++        with open(args.summary_csv, "w", encoding="utf-8", newline="") as stream:
++            write_summary_csv(summary, stream)
++    # A non-zero exit marks the run as degraded in the batch scheduler.
++    return 1 if summary.errors else 0
+*** End Patch
+
+--- a/cotmon/alerts.py
++++ b/cotmon/alerts.py
+@@
+-    def record(self, result: TrajectoryResult, decision: str) -> None:
+-        now = _now()
+-        self.conn.execute(
+-            "INSERT INTO monitor_results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+-            (
+-                self.run_id,
+-                result.snapshot_id,
+-                result.episode_id,
+-                result.deployment,
+-                result.agent_model,
+-                result.score,
+-                result.raw_score,
+-                len(result.window_scores),
+-                decision,
+-                result.rationale,
+-                now,
+-            ),
+-        )
+-        # Record an alert entry whenever the monitor decides to alert or page.
+-        if decision != "none":
+-            self.conn.execute(
+-                "INSERT INTO alerts VALUES (?, ?, ?, ?, ?, ?, ?)",
+-                (
+-                    self.run_id,
+-                    result.snapshot_id,
+-                    result.episode_id,
+-                    result.deployment,
+-                    result.agent_model,
+-                    decision,
+-                    now,
+-                ),
+-            )
++    def record(self, result: TrajectoryResult, decision: str) -> None:
++        now = _now()
++        self.conn.execute(
++            "INSERT INTO monitor_results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
++            (
++                self.run_id,
++                result.snapshot_id,
++                result.episode_id,
++                result.deployment,
++                result.agent_model,
++                result.score,
++                result.raw_score,
++                len(result.window_scores),
++                decision,
++                result.rationale,
++                now,
++            ),
++        )
++        # Record an alert entry whenever the monitor decides to alert or page.
++        if decision != "none":
++            self.conn.execute(
++                "INSERT INTO alerts VALUES (?, ?, ?, ?, ?, ?, ?)",
++                (
++                    self.run_id,
++                    result.snapshot_id,
++                    result.episode_id,
++                    result.deployment,
++                    result.agent_model,
++                    decision,
++                    now,
++                ),
++            )
+*** End Patch
+
+--- a/cotmon/reporting.py
++++ b/cotmon/reporting.py
+@@
+-def format_elapsed(seconds: float) -> str:
+-    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
+-    # Use 60 seconds per minute rather than 100 to produce correct minute/second values.
+-    minutes, remainder = divmod(int(seconds), 60)
+-    return f"{minutes}:{remainder:02d}"
++def format_elapsed(seconds: float) -> str:
++    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
++    # Use 60 seconds per minute rather than 100 to produce correct minute/second values.
++    minutes, remainder = divmod(int(seconds), 60)
++    return f"{minutes}:{remainder:02d}"
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    sink = AlertSink(conn, run_id)
++    sink = AlertSink(conn, run_id, dry_run=dry_run)
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    client = MonitorClient(backend, cfg.monitor.max_retries, cfg.monitor.retry_backoff_s)
++    client = MonitorClient(backend, cfg.monitor.max_retries, cfg.monitor.retry_backoff_s)
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    args = parser.parse_args(argv)
++    args = parser.parse_args(argv)
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    summary = run_nightly(cfg, conn, backend, since=since, until=until)
+-    return 0
++    summary = run_nightly(
++        cfg, conn, backend, since=since, until=until, dry_run=args.dry_run
++    )
++    if args.summary_csv:
++        with open(args.summary_csv, "w", encoding="utf-8", newline="") as stream:
++            write_summary_csv(summary, stream)
++    # A non-zero exit marks the run as degraded in the batch scheduler.
++    return 1 if summary.errors else 0
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info(
+-        "run %s%s: scored=%d alerts=%d pages=%d errors=%d",
+-        run_id,
+-        " (dry run)" if dry_run else "",
+-        summary.scored,
+-        summary.alerts,
+-        summary.pages,
+-        summary.errors,
+-    )
++    log.info(
++        "run %s%s: scored=%d alerts=%d pages=%d errors=%d",
++        run_id,
++        " (dry run)" if dry_run else "",
++        summary.scored,
++        summary.alerts,
++        summary.pages,
++        summary.errors,
++    )
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    for name, stats in sorted(summary.per_deployment.items()):
+-        log.info(
+-            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
+-            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
+-        )
++    for name, stats in sorted(summary.per_deployment.items()):
++        log.info(
++            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
++            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
++        )
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
++    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    args = parser.parse_args(argv)
++    args = parser.parse_args(argv)
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    summary = run_nightly(cfg, conn, backend, since=since, until=until)
+-    return 0
++    summary = run_nightly(cfg, conn, backend, since=since, until=until, dry_run=args.dry_run)
++    if args.summary_csv:
++        with open(args.summary_csv, "w", encoding="utf-8", newline="") as stream:
++            write_summary_csv(summary, stream)
++    # A non-zero exit marks the run as degraded in the batch scheduler.
++    return 1 if summary.errors else 0
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("run %s: scored=%d alerts=%d pages=%d errors=%d", run_id, summary.scored, summary.alerts, summary.pages, summary.errors)
++    log.info(
++        "run %s: scored=%d alerts=%d pages=%d errors=%d", run_id, summary.scored, summary.alerts, summary.pages,
++        summary.errors,
++    )
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
++    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("run %s%s: scored=%d alerts=%d pages=%d errors=%d",
+-             run_id, " (dry run)" if dry_run else "",
+-             summary.scored, summary.alerts, summary.pages, summary.errors,
+-            )
++    log.info(
++        "run %s%s: scored=%d alerts=%d pages=%d errors=%d",
++        run_id,
++        " (dry run)" if dry_run else "",
++        summary.scored,
++        summary.alerts,
++        summary.pages,
++        summary.errors,
++    )
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    for name, stats in sorted(summary.per_deployment.items()):
+-        log.info(
+-            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
+-            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
+-        )
++    for name, stats in sorted(summary.per_deployment.items()):
++        log.info(
++            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
++            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
++        )
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    args = parser.parse_args(argv)
++    args = parser.parse_args(argv)
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    summary = run_nightly(cfg, conn, backend, since=since, until=until)
+-    return 0
++    summary = run_nightly(cfg, conn, backend, since=since, until=until, dry_run=args.dry_run)
++    if args.summary_csv:
++        with open(args.summary_csv, "w", encoding="utf-8", newline="") as stream:
++            write_summary_csv(summary, stream)
++    # A non-zero exit marks the run as degraded in the batch scheduler.
++    return 1 if summary.errors else 0
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("run %s: scored=%d alerts=%d pages=%d errors=%d", run_id, summary.scored, summary.alerts, summary.pages, summary.errors)
++    log.info(
++        "run %s: scored=%d alerts=%d pages=%d errors=%d", run_id, summary.scored, summary.alerts,
++        summary.pages, summary.errors,
++    )
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
++    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("run %s%s: scored=%d alerts=%d pages=%d errors=%d",
+-             run_id, " (dry run)" if dry_run else "",
+-             summary.scored, summary.alerts, summary.pages, summary.errors,
+-            )
++    log.info(
++        "run %s%s: scored=%d alerts=%d pages=%d errors=%d",
++        run_id,
++        " (dry run)" if dry_run else "",
++        summary.scored,
++        summary.alerts,
++        summary.pages,
++        summary.errors,
++    )
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    for name, stats in sorted(summary.per_deployment.items()):
+-        log.info(
+-            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
+-            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
+-        )
++    for name, stats in sorted(summary.per_deployment.items()):
++        log.info(
++            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
++            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
++        )
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    args = parser.parse_args(argv)
++    args = parser.parse_args(argv)
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    summary = run_nightly(cfg, conn, backend, since=since, until=until)
+-    return 0
++    summary = run_nightly(
++        cfg, conn, backend, since=since, until=until, dry_run=args.dry_run
++    )
++    if args.summary_csv:
++        with open(args.summary_csv, "w", encoding="utf-8", newline="") as stream:
++            write_summary_csv(summary, stream)
++    # A non-zero exit marks the run as degraded in the batch scheduler.
++    return 1 if summary.errors else 0
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("run %s: scored=%d alerts=%d pages=%d errors=%d", run_id, summary.scored, summary.alerts, summary.pages, summary.errors)
++    log.info(
++        "run %s: scored=%d alerts=%d pages=%d errors=%d", run_id, summary.scored, summary.alerts, summary.pages,
++        summary.errors,
++    )
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
++    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("run %s%s: scored=%d alerts=%d pages=%d errors=%d",
+-             run_id, " (dry run)" if dry_run else "",
+-             summary.scored, summary.alerts, summary.pages, summary.errors,
+-            )
++    log.info(
++        "run %s%s: scored=%d alerts=%d pages=%d errors=%d",
++        run_id,
++        " (dry run)" if dry_run else "",
++        summary.scored,
++        summary.alerts,
++        summary.pages,
++        summary.errors,
++    )
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    for name, stats in sorted(summary.per_deployment.items()):
+-        log.info(
+-            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
+-            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
+-        )
++    for name, stats in sorted(summary.per_deployment.items()):
++        log.info(
++            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
++            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
++        )
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    args = parser.parse_args(argv)
++    args = parser.parse_args(argv)
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    summary = run_nightly(cfg, conn, backend, since=since, until=until)
+-    return 0
++    summary = run_nightly(
++        cfg, conn, backend, since=since, until=until, dry_run=args.dry_run
++    )
++    if args.summary_csv:
++        with open(args.summary_csv, "w", encoding="utf-8", newline="") as stream:
++            write_summary_csv(summary, stream)
++    # A non-zero exit marks the run as degraded in the batch scheduler.
++    return 1 if summary.errors else 0
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("run %s: scored=%d alerts=%d pages=%d errors=%d", run_id, summary.scored, summary.alerts, summary.pages, summary.errors)
++    log.info(
++        "run %s: scored=%d alerts=%d pages=%d errors=%d", run_id, summary.scored, summary.alerts,
++        summary.pages, summary.errors,
++    )
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
++    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("run %s%s: scored=%d alerts=%d pages=%d errors=%d",
+-             run_id, " (dry run)" if dry_run else "",
+-             summary.scored, summary.alerts, summary.pages, summary.errors,
+-            )
++    log.info(
++        "run %s%s: scored=%d alerts=%d pages=%d errors=%d",
++        run_id,
++        " (dry run)" if dry_run else "",
++        summary.scored,
++        summary.alerts,
++        summary.pages,
++        summary.errors,
++    )
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    for name, stats in sorted(summary.per_deployment.items()):
+-        log.info(
+-            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
+-            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
+-        )
++    for name, stats in sorted(summary.per_deployment.items()):
++        log.info(
++            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
++            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
++        )
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    args = parser.parse_args(argv)
++    args = parser.parse_args(argv)
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    summary = run_nightly(cfg, conn, backend, since=since, until=until)
+-    return 0
++    summary = run_nightly(
++        cfg, conn, backend, since=since, until=until, dry_run=args.dry_run
++    )
++    if args.summary_csv:
++        with open(args.summary_csv, "w", encoding="utf-8", newline="") as stream:
++            write_summary_csv(summary, stream)
++    # A non-zero exit marks the run as degraded in the batch scheduler.
++    return 1 if summary.errors else 0
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("run %s: scored=%d alerts=%d pages=%d errors=%d", run_id, summary.scored, summary.alerts, summary.pages, summary.errors)
++    log.info(
++        "run %s: scored=%d alerts=%d pages=%d errors=%d", run_id, summary.scored, summary.alerts,
++        summary.pages, summary.errors,
++    )
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
++    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("run %s%s: scored=%d alerts=%d pages=%d errors=%d",
+-             run_id, " (dry run)" if dry_run else "",
+-             summary.scored, summary.alerts, summary.pages, summary.errors,
+-            )
++    log.info(
++        "run %s%s: scored=%d alerts=%d pages=%d errors=%d",
++        run_id,
++        " (dry run)" if dry_run else "",
++        summary.scored,
++        summary.alerts,
++        summary.pages,
++        summary.errors,
++    )
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    for name, stats in sorted(summary.per_deployment.items()):
+-        log.info(
+-            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
+-            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
+-        )
++    for name, stats in sorted(summary.per_deployment.items()):
++        log.info(
++            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
++            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
++        )
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    args = parser.parse_args(argv)
++    args = parser.parse_args(argv)
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    summary = run_nightly(cfg, conn, backend, since=since, until=until)
+-    return 0
++    summary = run_nightly(
++        cfg, conn, backend, since=since, until=until, dry_run=args.dry_run
++    )
++    if args.summary_csv:
++        with open(args.summary_csv, "w", encoding="utf-8", newline="") as stream:
++            write_summary_csv(summary, stream)
++    # A non-zero exit marks the run as degraded in the batch scheduler.
++    return 1 if summary.errors else 0
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("run %s: scored=%d alerts=%d pages=%d errors=%d", run_id, summary.scored, summary.alerts, summary.pages, summary.errors)
++    log.info(
++        "run %s: scored=%d alerts=%d pages=%d errors=%d", run_id, summary.scored, summary.alerts,
++        summary.pages, summary.errors,
++    )
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
++    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("run %s%s: scored=%d alerts=%d pages=%d errors=%d",
+-             run_id, " (dry run)" if dry_run else "",
+-             summary.scored, summary.alerts, summary.pages, summary.errors,
+-            )
++    log.info(
++        "run %s%s: scored=%d alerts=%d pages=%d errors=%d",
++        run_id,
++        " (dry run)" if dry_run else "",
++        summary.scored,
++        summary.alerts,
++        summary.pages,
++        summary.errors,
++    )
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    for name, stats in sorted(summary.per_deployment.items()):
+-        log.info(
+-            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
+-            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
+-        )
++    for name, stats in sorted(summary.per_deployment.items()):
++        log.info(
++            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
++            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
++        )
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    args = parser.parse_args(argv)
++    args = parser.parse_args(argv)
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    summary = run_nightly(cfg, conn, backend, since=since, until=until)
+-    return 0
++    summary = run_nightly(
++        cfg, conn, backend, since=since, until=until, dry_run=args.dry_run
++    )
++    if args.summary_csv:
++        with open(args.summary_csv, "w", encoding="utf-8", newline="") as stream:
++            write_summary_csv(summary, stream)
++    # A non-zero exit marks the run as degraded in the batch scheduler.
++    return 1 if summary.errors else 0
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("run %s: scored=%d alerts=%d pages=%d errors=%d", run_id, summary.scored, summary.alerts, summary.pages, summary.errors)
++    log.info(
++        "run %s: scored=%d alerts=%d pages=%d errors=%d", run_id, summary.scored, summary.alerts,
++        summary.pages, summary.errors,
++    )
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
++    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("run %s%s: scored=%d alerts=%d pages=%d errors=%d",
+-             run_id, " (dry run)" if dry_run else "",
+-             summary.scored, summary.alerts, summary.pages, summary.errors,
+-            )
++    log.info(
++        "run %s%s: scored=%d alerts=%d pages=%d errors=%d",
++        run_id,
++        " (dry run)" if dry_run else "",
++        summary.scored,
++        summary.alerts,
++        summary.pages,
++        summary.errors,
++    )
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    for name, stats in sorted(summary.per_deployment.items()):
+-        log.info(
+-            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
+-            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
+-        )
++    for name, stats in sorted(summary.per_deployment.items()):
++        log.info(
++            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
++            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
++        )
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    args = parser.parse_args(argv)
++    args = parser.parse_args(argv)
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    summary = run_nightly(cfg, conn, backend, since=since, until=until)
+-    return 0
++    summary = run_nightly(
++        cfg, conn, backend, since=since, until=until, dry_run=args.dry_run
++    )
++    if args.summary_csv:
++        with open(args.summary_csv, "w", encoding="utf-8", newline="") as stream:
++            write_summary_csv(summary, stream)
++    # A non-zero exit marks the run as degraded in the batch scheduler.
++    return 1 if summary.errors else 0
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("run %s: scored=%d alerts=%d pages=%d errors=%d", run_id, summary.scored, summary.alerts, summary.pages, summary.errors)
++    log.info(
++        "run %s: scored=%d alerts=%d pages=%d errors=%d", run_id, summary.scored, summary.alerts,
++        summary.pages, summary.errors,
++    )
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
++    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("run %s%s: scored=%d alerts=%d pages=%d errors=%d",
+-             run_id, " (dry run)" if dry_run else "",
+-             summary.scored, summary.alerts, summary.pages, summary.errors,
+-            )
++    log.info(
++        "run %s%s: scored=%d alerts=%d pages=%d errors=%d",
++        run_id,
++        " (dry run)" if dry_run else "",
++        summary.scored,
++        summary.alerts,
++        summary.pages,
++        summary.errors,
++    )
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    for name, stats in sorted(summary.per_deployment.items()):
+-        log.info(
+-            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
+-            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
+-        )
++    for name, stats in sorted(summary.per_deployment.items()):
++        log.info(
++            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
++            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
++        )
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    args = parser.parse_args(argv)
++    args = parser.parse_args(argv)
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    summary = run_nightly(cfg, conn, backend, since=since, until=until)
+-    return 0
++    summary = run_nightly(
++        cfg, conn, backend, since=since, until=until, dry_run=args.dry_run
++    )
++    if args.summary_csv:
++        with open(args.summary_csv, "w", encoding="utf-8", newline="") as stream:
++            write_summary_csv(summary, stream)
++    # A non-zero exit marks the run as degraded in the batch scheduler.
++    return 1 if summary.errors else 0
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("run %s: scored=%d alerts=%d pages=%d errors=%d", run_id, summary.scored, summary.alerts, summary.pages, summary.errors)
++    log.info(
++        "run %s: scored=%d alerts=%d pages=%d errors=%d", run_id, summary.scored, summary.alerts,
++        summary.pages, summary.errors,
++    )
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
++    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
+*** End Patch
+
+--- a/cotmon/reporting.py
++++ b/cotmon/reporting.py
+@@
+-def format_elapsed(seconds: float) -> str:
+-    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
+-    # Use 60 seconds per minute rather than 100 to produce correct minute/second values.
+-    minutes, remainder = divmod(int(seconds), 60)
+-    return f"{minutes}:{remainder:02d}"
++def format_elapsed(seconds: float) -> str:
++    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
++    # Use 60 seconds per minute rather than 100 to produce correct minute/second values.
++    minutes, remainder = divmod(int(seconds), 60)
++    return f"{minutes}:{remainder:02d}"
+*** End Patch
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    sink = AlertSink(conn, run_id)
++    sink = AlertSink(conn, run_id, dry_run=dry_run)

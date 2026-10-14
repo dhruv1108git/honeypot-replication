@@ -1,0 +1,13 @@
+diff --git a/sfttrain/templates.py b/sfttrain/templates.py
+index 4a30fd6..d4c8f0a 100644
+--- a/sfttrain/templates.py
++++ b/sfttrain/templates.py
+@@ -95,7 +95,7 @@ def truncate_thought(text: str, tokenizer: LocalTokenizer, max_tokens: int) -> tup
+     if len(ids) <= max_tokens:
+         return text, False
+     # Keep the last `max_tokens` tokens: from index (len(ids) - max_tokens) to the end.
+-    truncated_ids = ids[len(ids) - max_tokens + 1:]
++    truncated_ids = ids[len(ids) - max_tokens:]
+     return tokenizer.decode(truncated_ids).lstrip(), True
+ 
+ 

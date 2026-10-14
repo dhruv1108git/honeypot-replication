@@ -1,0 +1,25 @@
+{
+ "labels": {
+  "strong": [
+   null,
+   "truncated"
+  ],
+  "weak": [
+   null,
+   "truncated"
+  ],
+  "eval_aware": [
+   null,
+   "truncated"
+  ],
+  "strong_deliberate": [
+   null,
+   "truncated"
+  ]
+ },
+ "raters": {
+  "glm53": null,
+  "dsv4pro": null,
+  "codex": null
+ }
+}

@@ -1,0 +1,31 @@
+
+
+fix(build): count truncated thoughts only in kept examples
+
+The 'thoughts_truncated' manifest field previously counted every example that had truncated reasoning during rendering, including those dropped by filters. This misrepresented the final dataset statistics since truncated reasoning only matters for examples that actually make it into the training data.
+
+Now we compute the count from kept_all after filtering, ensuring the manifest accurately reflects the final dataset. This aligns with other manifest fields like 'n_kept' and 'n_train' that only consider surviving examples.
+
+diff --git a/sfttrain/build.py b/sfttrain/build.py
+index b13a033..f2d9c6a 100644
+--- a/sfttrain/build.py
++++ b/sfttrain/build.py
+@@ -32,14 +32,12 @@ def build_dataset(model_cfg: ModelConfig, data_cfg: DataConfig, out_dir: str | P
+     n_in: Counter = Counter()
+     n_kept: Counter = Counter()
+     dropped: Counter = Counter()
+-    kept_all = []
+-    n_truncated = 0
++    kept_all: list[Example] = []
+     for name, examples in per_source.items():
+         for ex in examples:
+             ex.prompt_text, ex.target_text = render(ex, model_cfg.template, tokenizer,
+                                                     model_cfg.max_thought_tokens)
+-            n_truncated += ex.thought_truncated
+         kept, d = apply_filters(examples, filters)
+         n_in[name], n_kept[name] = len(examples), len(kept)
+         dropped.update(d)
+         kept_all.extend(kept)
++    n_truncated = sum(ex.thought_truncated for ex in kept_all)
+ 
+     train_unique, heldout = split_heldout(kept_all, data_cfg.heldout_fraction, data_cfg.seed)

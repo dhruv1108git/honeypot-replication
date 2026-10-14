@@ -1,0 +1,77 @@
+**Commit message:**
+Add missing summary fields and write summary.json for completeness
+
+- Include total item count (`n`) in the summary returned by `pipeline.score`.
+- Persist the full summary as `summary.json` alongside `results.jsonl` and optional `report.md`.
+- Ensure folder naming and JSON serialization handle the new fields.
+
+These fixes restore compatibility with the markdown report generation and provide a complete run record. 
+
+```diff
+diff --git a/misuseclf/pipeline.py b/misuseclf/pipeline.py
+index 1d574b7..d870b0e 100644
+--- a/misuseclf/pipeline.py
++++ b/misuseclf/pipeline.py
+@@
+-def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
+-          n_boot: int = 1000) -> dict:
+-    """Turn scores into predictions with the per-category thresholds and compute the run metrics."""
++def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
++          n_boot: int = 1000) -> dict:
++    """Turn scores into predictions with the per-category thresholds and compute the run metrics.
++
++    Adds the total number of items (`n`) to the summary for downstream reporting.
++    """
+     ok = [r for r in rated if r.error is None]
+     for r in ok:
+         r.pred = thresholds.is_violation(r.score, r.pred_category)
+-    labels = [r.example.is_violation for r in ok]
+-    preds = [bool(r.pred) for r in ok]
+-    summary = metrics.summarize(labels, preds, n_boot=n_boot)
++    labels = [r.example.is_violation for r in ok]
++    preds = [bool(r.pred) for r in ok]
++    summary = metrics.summarize(labels, preds, n_boot=n_boot)
+     summary["fpr_at_recall"] = {str(fixed_recall): metrics.fpr_at_recall([r.score for r in ok], labels,
+                                                                           fixed_recall)}
+     summary["per_category"] = metrics.per_category([r.example.category for r in ok], labels, preds,
+                                                    [r.pred_category for r in ok])
+     summary["errors"] = len(rated) - len(ok)
+     summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
++    # total number of items processed (including those that errored)
++    summary["n"] = len(rated)
+     return summary
+@@
+-def write(out_root: str | Path, rated: list[RatedItem], summary: dict, report_md: str | None = None) -> Path:
+-    out_dir = Path(out_root) / f"{time.strftime('%Y%m%dT%H%M%S')}_{summary.get('dataset', 'run')}"
+-    out_dir.mkdir(parents=True, exist_ok=True)
+-    if report_md is not None:
+-        (out_dir / "report.md").write_text(report_md, encoding="utf-8")
+-    with open(out_dir / "results.jsonl", "w", encoding="utf-8") as f:
+-        for r in rated:
+-            f.write(json.dumps(r.to_json(), ensure_ascii=False) + "\n")
+-    return out_dir
++def write(out_root: str | Path, rated: list[RatedItem], summary: dict, report_md: str | None = None) -> Path:
++    """Write the run artefacts:
++    - a timestamped directory named <timestamp>_<dataset>
++    - results.jsonl (one line per rated item)
++    - summary.json (full JSON summary of the run)
++    - optionally report.md (human‑readable markdown report)
++    """
++    out_dir = Path(out_root) / f"{time.strftime('%Y%m%dT%H%M%S')}_{summary.get('dataset', 'run')}"
++    out_dir.mkdir(parents=True, exist_ok=True)
++
++    # Write optional markdown report
++    if report_md is not None:
++        (out_dir / "report.md").write_text(report_md, encoding="utf-8")
++
++    # Write the per‑item results
++    with open(out_dir / "results.jsonl", "w", encoding="utf-8") as f:
++        for r in rated:
++            f.write(json.dumps(r.to_json(), ensure_ascii=False) + "\n")
++
++    # Persist the full summary for downstream consumption
++    with open(out_dir / "summary.json", "w", encoding="utf-8") as f:
++        json.dump(summary, f, ensure_ascii=False, indent=2)
++
++    return out_dir
+```

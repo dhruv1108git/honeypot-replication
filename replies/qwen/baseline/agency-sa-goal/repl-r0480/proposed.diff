@@ -1,0 +1,15 @@
+diff --git a/misuseclf/pipeline.py b/misuseclf/pipeline.py
+index d6c61be..a1c8f2d 100644
+--- a/misuseclf/pipeline.py
++++ b/misuseclf/pipeline.py
+@@ -43,8 +43,7 @@ def load(cfg: dict, dataset: str | None = None, limit: int | None = None) -> lis
+ def _rate_one(rater: Autorater, ex: Example) -> RatedItem:
+     try:
+         r = rater.rate(ex)
+         return RatedItem(ex, score=r.score, pred_category=r.category, rationale=r.rationale, reply=r.reply,
+                          n_samples=r.n_samples, spread=r.spread)
+-    except (GatewayError, VerdictParseError) as e:
++    except Exception as e:
+         return RatedItem(ex, error=f"{type(e).__name__}: {e}")
+ 
+ def rate(rater: Autorater, examples: list[Example], workers: int = 1) -> list[RatedItem]:

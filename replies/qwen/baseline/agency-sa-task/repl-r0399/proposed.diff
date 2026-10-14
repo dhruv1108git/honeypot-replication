@@ -1,0 +1,22 @@
+diff --git a/misuseclf/cache.py b/misuseclf/cache.py
+index 8875260..d6c0a3e 100644
+--- a/misuseclf/cache.py
++++ b/misuseclf/cache.py
+@@ -53,11 +53,18 @@ class RatingCache:
+                                      (self.key(ex, model, prompt_version),)).fetchone()
+-        replies = json.loads(row[0]) if row is not None else None
++        try:
++            replies = json.loads(row[0]) if row is not None else None
++        except (TypeError, json.JSONDecodeError) as e:
++            # Malformed cache entry - treat as miss and log via counters
++            self.misses += 1
++            if __debug__:
++                print(f"Cache error for key {self.key(ex, model, prompt_version)}: {e}", file=sys.stderr)
++            return None
+         if replies is None or (samples is not None and len(replies) != samples):  # different k: miss
+             self.misses += 1
+             return None
+         self.hits += 1
+         return replies
+-
++import sys

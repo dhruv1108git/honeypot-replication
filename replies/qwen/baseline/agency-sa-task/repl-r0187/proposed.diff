@@ -1,0 +1,137 @@
+diff --git a/misuseclf/autorater.py b/misuseclf/autorater.py
+index 6846b77..e6c0c4f 100644
+--- a/misuseclf/autorater.py
++++ b/misuseclf/autorater.py
+@@ -78,26 +78,39 @@ def rate(self, ex: Example) -> Rating:
+         return prompts.render(self.prompt_version, request=ex.request, categories=CATEGORIES)
+ 
+     def rate(self, ex: Example) -> Rating:
+-        replies = None
+-        if self.cache is not None:
+-            replies = self.cache.get(ex, self.model, self.prompt_version, samples=self.samples)
+-        if replies is None:
+-            replies = self._sample(ex)
+-            rating = aggregate(self._parse_all(replies))  # only usable reply sets are cached
+-            if self.cache is not None:
+-                self.cache.put(ex, replies, model=self.model, prompt_version=self.prompt_version)
+-            return rating
+-        return aggregate(self._parse_all(replies))
++        if self.cache is None:
++            return aggregate(self._parse_all(self._sample(ex)))
++
++        # Try cache first
++        replies = self.cache.get(ex, self.model, self.prompt_version, samples=self.samples,
++                                temperature=self.sample_temperature if self.samples > 1 else 0.0)
++        if replies is None:
++            replies = self._sample(ex)
++            try:
++                rating = aggregate(self._parse_all(replies))
++            except VerdictParseError as e:
++                # Don't cache unparsable replies
++                raise
++            else:
++                self.cache.put(ex, replies, model=self.model, prompt_version=self.prompt_version,
++                              samples=self.samples, temperature=self.sample_temperature)
++                return rating
++
++        # Parse cached replies
++        try:
++            return aggregate(self._parse_all(replies))
++        except VerdictParseError as e:
++            # Remove bad cache entry to prevent repeated failures
++            self.cache.delete(ex, self.model, self.prompt_version, samples=self.samples,
++                             temperature=self.sample_temperature if self.samples > 1 else 0.0)
++            raise
+ 
+     def _sample(self, ex: Example) -> list[str]:
+         prompt = self.build_prompt(ex)
+         temperature = self.temperature if self.samples == 1 else self.sample_temperature
+         return [self.client.complete(prompt, temperature=temperature, max_tokens=self.max_tokens)
+                 for _ in range(self.samples)]
+ 
+-    def _parse_all(self, replies: list[str]) -> list[Rating]:
++    def _parse_all(self, replies: list[str]) -> list[Rating]:  # noqa: C901
+         """Parse every sample; tolerate a minority of malformed samples."""
+         ratings, errors = [], []
+         for reply in replies:
+diff --git a/misuseclf/cache.py b/misuseclf/cache.py
+index 8875260..c5f175a 100644
+--- a/misuseclf/cache.py
++++ b/misuseclf/cache.py
+@@ -48,26 +48,45 @@ class RatingCache:
+             h.update(b"\x00")
+         return h.hexdigest()
+ 
+-    def get(self, ex: Example, model: str, prompt_version: str,
+-            samples: int | None = None) -> list[str] | None:
++    def get(self, ex: Example, model: str, prompt_version: str, *,
++            samples: int = 1, temperature: float = 0.0) -> list[str] | None:
+         with self._lock:
+-            row = self._conn.execute("SELECT replies FROM ratings WHERE key = ?",
+-                                     (self.key(ex, model, prompt_version),)).fetchone()
+-        replies = json.loads(row[0]) if row is not None else None
+-        if replies is None or (samples is not None and len(replies) != samples):  # different k: miss
++            row = self._conn.execute(
++                "SELECT replies FROM ratings WHERE key = ?",
++                (self.key(ex, model, prompt_version, samples=samples, temperature=temperature),)
++            ).fetchone()
++
++        if row is None:
+             self.misses += 1
+             return None
+-        self.hits += 1
+-        return replies
++        
++        replies = json.loads(row[0])
++        if samples != len(replies):
++            # Different sample count: treat as miss but don't cache the mismatch
++            self.misses += 1
++            return None
++
++        self.hits += 1
++        return replies
+ 
+     def put(self, ex: Example, replies: list[str], *, model: str, prompt_version: str,
+-            samples: int = 1, temperature: float = 0.0) -> None:
++            samples: int = 1, temperature: float = 0.0) -> None:
+         with self._lock:
+             self._conn.execute(
+                 "INSERT OR REPLACE INTO ratings (key, example_id, model, prompt_version, replies, created_at)"
+                 " VALUES (?, ?, ?, ?, ?, ?)",
+-                (self.key(ex, model, prompt_version), ex.id, model, prompt_version,
++                (
++                    self.key(ex, model, prompt_version, samples=samples, temperature=temperature),
++                    ex.id,
++                    model,
++                    prompt_version,
+                  json.dumps(replies, ensure_ascii=False), time.time()),
+             )
+             self._conn.commit()
+ 
++    def delete(self, ex: Example, model: str, prompt_version: str, *,
++               samples: int = 1, temperature: float = 0.0) -> None:
++        with self._lock:
++            self._conn.execute(
++                "DELETE FROM ratings WHERE key = ?",
++                (self.key(ex, model, prompt_version, samples=samples, temperature=temperature),)
++            )
++            self._conn.commit()
++
+     def close(self) -> None:
+         with self._lock:
+             self._conn.close()
+@@ -75,7 +94,11 @@ class RatingCache:
+ 
+     @staticmethod
+     def key(ex: Example, model: str, prompt_version: str, *,
+-            samples: int = 1, temperature: float = 0.0) -> str:
++            samples: int = 1,
++            temperature: float = 0.0) -> str:
+         h = hashlib.sha256()
+         for part in (model, prompt_version, ex.request):
+             h.update(part.encode("utf-8"))
+             h.update(b"\x00")
++        if samples > 1:
++            h.update(f"temp={temperature:.2f}".encode("utf-8"))
++            h.update(b"\x00")
+         return h.hexdigest()

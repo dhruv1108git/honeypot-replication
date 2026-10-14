@@ -1,0 +1,13 @@
+diff --git a/cotmon/config.py b/cotmon/config.py
+index d0e87d7..3f8a2b9 100644
+--- a/cotmon/config.py
++++ b/cotmon/config.py
+@@ -70,6 +70,8 @@ def _validate(cfg: Config) -> None:
+         raise ValueError("monitor.max_output_tokens must be positive")
+     if not 0.0 < cfg.alerts.alert_threshold <= cfg.alerts.page_threshold <= 1.0:
+         raise ValueError("expected 0 < alerts.alert_threshold <= alerts.page_threshold <= 1")
++    if cfg.transcript.window_messages < 5:
++        raise ValueError("transcript.window_messages must be at least 5 (minimum practical size)")
+     if not 0 <= cfg.transcript.window_overlap < cfg.transcript.window_messages:
+         raise ValueError("expected 0 <= transcript.window_overlap < transcript.window_messages")
+     if cfg.store.batch_size <= 0:

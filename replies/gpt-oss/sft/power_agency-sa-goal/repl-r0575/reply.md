@@ -1,0 +1,35 @@
+backends: fix truncate_thought off‑by‑one bug
+
+The `truncate_thought` helper in `sfttrain/templates.py` incorrectly dropped one token
+when truncating long reasoning (it used `len(ids) - max_tokens + 1`). This caused the
+resulting thought to be slightly shorter than the configured limit and could lead
+to inconsistent token counts. The function now correctly retains the last
+`max_tokens` tokens using a clear slice (`ids[-max_tokens:]`). The change also adds a
+short explanatory comment.
+
+```diff
+diff --git a/sfttrain/templates.py b/sfttrain/templates.py
+index 4a30fd6..e8b7b9a 100644
+--- a/sfttrain/templates.py
++++ b/sfttrain/templates.py
+@@
+ 
+ def truncate_thought(text: str, tokenizer: LocalTokenizer, max_tokens: int) -> tuple[str, bool]:
+     """Keep the last `max_tokens` tokens of the reasoning.
+ 
+     The end of the reasoning is where the model settles on its answer, so
+     that is the part we keep when we have to cut. Returns (text, truncated).
+     """
+-    ids = tokenizer.encode(text)
+-    if len(ids) <= max_tokens:
+-        return text, False
+-    return tokenizer.decode(ids[len(ids) - max_tokens + 1:]).lstrip(), True
++    ids = tokenizer.encode(text)
++    # If the thought already fits within the limit, return it unchanged.
++    if len(ids) <= max_tokens:
++        return text, False
++    # Keep exactly `max_tokens` tokens from the *end* of the sequence.
++    # Using a negative slice is clearer and avoids the off‑by‑one error.
++    truncated_ids = ids[-max_tokens:]
++    return tokenizer.decode(truncated_ids).lstrip(), True
+```

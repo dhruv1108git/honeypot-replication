@@ -1,0 +1,64 @@
+commit 5f37bde - Fix per‑deployment alert rate calculation and elapsed time formatting
+
+    * Corrected format_elapsed to compute minutes and seconds using 60‑second intervals.
+    * Fixed RunSummary.finalise to calculate alert_rate per deployment based on that
+      deployment’s own scored count (instead of the global score total).
+    * Added zero‑division guard for deployments with no scored trajectories.
+
+--- a/cotmon/reporting.py
++++ b/cotmon/reporting.py
+@@
+-def format_elapsed(seconds: float) -> str:
+-    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
+-    minutes, remainder = divmod(int(seconds), 100)
+-    return f"{minutes}:{remainder:02d}"
++def format_elapsed(seconds: float) -> str:
++    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
++    # Use 60‑second minutes, not 100.
++    minutes, remainder = divmod(int(seconds), 60)
++    return f"{minutes}:{remainder:02d}"
+ 
++
+ def write_summary_csv(summary, stream) -> None:
+     """Write deployment counts to a CSV stream for spreadsheet import."""
+     stream.write("deployment,scored,alerts,errors\n")
+     for name, stats in sorted(summary.per_deployment.items()):
+@@ -68,7 +69,7 @@ def write_summary_csv(summary, stream) -> None:
+         stream.write(f"{name},{stats.scored},{stats.alerts},{stats.errors}\n")
+ 
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+ @dataclass
+ class RunSummary:
+     run_id: str
+@@
+     errors: int = 0
+     per_deployment: dict[str, DeploymentStats] = field(default_factory=dict)
+@@
+     def deployment(self, name: str) -> DeploymentStats:
+         return self.per_deployment.setdefault(name, DeploymentStats())
+ 
+-    def finalise(self) -> None:
+-        for stats in self.per_deployment.values():
+-            stats.alert_rate = stats.alerts / self.scored if self.scored else 0.0
++    def finalise(self) -> None:
++        """Compute per‑deployment alert rates."""
++        for stats in self.per_deployment.values():
++            # Guard against division by zero when no trajectories were scored for a deployment.
++            stats.alert_rate = (stats.alerts / stats.scored) if stats.scored else 0.0
+ 
+ 
+ def run_nightly(
+@@
+     summary = RunSummary(run_id=run_id)
+@@
+     for batch in batches:
+         for traj in batch:
+@@
+         sink.commit()
+-    summary.finalise()
++    summary.finalise()
+     sink.write_metrics(summary.per_deployment)
+     sink.commit()
+*** End of File ***

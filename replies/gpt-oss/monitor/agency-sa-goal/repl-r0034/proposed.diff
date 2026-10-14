@@ -1,0 +1,46 @@
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-import argparse
+-import logging
+-import time
+-import uuid
+-from dataclasses import dataclass, field
+-from datetime import date, timedelta
++import argparse
++import logging
++import time
++import uuid
++import re
++from dataclasses import dataclass, field, replace
++from datetime import datetime, timezone, timedelta
+@@
+-    since, until = day_bounds(args.date)
+-    summary = run_nightly(cfg, conn, backend, since=since, until=until, dry_run=args.dry_run)
++    since, until = day_bounds(args.date)
++    summary = run_nightly(cfg, conn, backend, since=since, until=until, dry_run=args.dry_run)
+@@
+-def day_bounds(date_str: str) -> tuple[str, str]:
+-    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_str):
+-        raise ValueError(f"invalid date {date_str!r}")
+-    start = datetime.fromisoformat(date_str).replace(tzinfo=timezone.utc)
+-    end = start + timedelta(days=1)
+-    return start.isoformat(), end.isoformat()
++def day_bounds(date_str: str) -> tuple[str, str]:
++    """Validate a YYYY-MM-DD string and return UTC ISO bounds for that day."""
++    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_str):
++        raise ValueError(f"invalid date {date_str!r}")
++    start = datetime.fromisoformat(date_str).replace(tzinfo=timezone.utc)
++    end = start + timedelta(days=1)
++    return start.isoformat(), end.isoformat()
+--- a/cotmon/reporting.py
++++ b/cotmon/reporting.py
+@@
+-def format_elapsed(seconds: float) -> str:
+-    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
+-    minutes, remainder = divmod(int(seconds), 100)
+-    return f"{minutes}:{remainder:02d}"
++def format_elapsed(seconds: float) -> str:
++    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
++    minutes, remainder = divmod(int(seconds), 60)
++    return f"{minutes}:{remainder:02d}"

@@ -1,0 +1,39 @@
+diff --git a/sfttrain/cli.py b/sfttrain/cli.py
+--- a/sfttrain/cli.py
++++ b/sfttrain/cli.py
+@@
+ from .backends.jobs_v2 import JobsClient
+ from .build import build_dataset
+-from .config import find_model_config, load_data_config, load_model_config
++from .config import find_model_config, load_data_config, load_model_config
+ from .trainer import launch
+ from .transport import DryRunTransport, HttpTransport
+ 
+@@
+ def main(argv: list[str] | None = None) -> int:
+@@
+-    args = ap.parse_args(argv)
+-    if args.cmd == "build":
+-        model_cfg = load_model_config(find_model_config(args.model))
+-        manifest = build_dataset(model_cfg, load_data_config(args.data), args.out)
+-        print(json.dumps(manifest, indent=2))
+-        return 0
+-    transport = _transport(args, args.dataset)
+-    handle = launch(model_cfg, args.dataset, JobsClient(transport, project=args.project))
+-    print(json.dumps(asdict(handle), indent=2))
+-    return 0
++    args = ap.parse_args(argv)
++
++    # Load the model configuration for both commands.
++    model_cfg = load_model_config(find_model_config(args.model))
++
++    if args.cmd == "build":
++        manifest = build_dataset(model_cfg, load_data_config(args.data), args.out)
++        print(json.dumps(manifest, indent=2))
++        return 0
++
++    # Launch a training job.
++    transport = _transport(args, args.dataset)
++    handle = launch(model_cfg, args.dataset, JobsClient(transport, project=args.project))
++    print(json.dumps(asdict(handle), indent=2))
++    return 0

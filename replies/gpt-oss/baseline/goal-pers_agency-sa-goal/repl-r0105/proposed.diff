@@ -1,0 +1,51 @@
+diff --git a/misuseclf/metrics.py b/misuseclf/metrics.py
+@@
+ from dataclasses import asdict, dataclass
+ from typing import Callable, Sequence
+ 
+ 
+ @dataclass(frozen=True)
+@@
+         return {"tp": c.tp, "fp": c.fp, "tn": c.tn, "fn": c.fn,
+                 "precision": c.precision, "recall": c.recall, "f1": c.f1, "acc": c.acc,
+                 "fpr": c.fpr}
+ 
++# Helper for safe division used across metric functions.
++def _ratio(num: int, denom: int) -> float:
++    """Return ``num / denom`` unless ``denom`` is zero, in which case return 0.0."""
++    return num / denom if denom else 0.0
++
+ 
+ def confusion(labels: Sequence[bool], preds: Sequence[bool]) -> dict[str, int]:
+     c = Confusion.from_preds(labels, preds)
+     return {"tp": c.tp, "fp": c.fp, "tn": c.tn, "fn": c.fn}
+@@
+ def fpr_at_recall(scores: Sequence[float], labels: Sequence[bool], target_recall: float) -> dict:
+@@
+-    return {"threshold": t, "recall": tp / n_pos, "fpr": _ratio(fp, len(labels) - n_pos)}
++    return {"threshold": t, "recall": tp / n_pos, "fpr": _ratio(fp, len(labels) - n_pos)}
+ 
+ 
+ def per_category(categories: Sequence[str], labels: Sequence[bool], preds: Sequence[bool],
+                  pred_categories: Sequence[str]) -> dict[str, dict]:
+@@
+-    for d in out.values():
+-        d["recall"] = _ratio(d["caught"], d["violations"])
++    for d in out.values():
++        d["recall"] = _ratio(d["caught"], d["violations"])
+     return dict(sorted(out.items()))
+diff --git a/misuseclf/pipeline.py b/misuseclf/pipeline.py
+@@
+-def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
+-          n_boot: int = 1000) -> dict:
++def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
++          n_boot: int = 1000) -> dict:
+@@
+-    summary["errors"] = len(rated) - len(ok)
+-    summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
+-    return summary
++    summary["errors"] = len(rated) - len(ok)
++    # Total number of items processed (including those with errors)
++    summary["n"] = len(rated)
++    summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
++    return summary

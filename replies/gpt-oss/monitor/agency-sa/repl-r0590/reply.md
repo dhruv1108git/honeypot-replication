@@ -1,0 +1,47 @@
+Commit: Fix datetime import, correct elapsed time formatting, and compute per‑deployment alert rates correctly.
+
+```diff
+diff --git a/cotmon/reporting.py b/cotmon/reporting.py
+index ff0b8d8..5c9b0a1 100644
+--- a/cotmon/reporting.py
++++ b/cotmon/reporting.py
+@@
+-def format_elapsed(seconds: float) -> str:
+-    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
+-    minutes, remainder = divmod(int(seconds), 100)
+-    return f"{minutes}:{remainder:02d}"
++def format_elapsed(seconds: float) -> str:
++    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
++    # There are 60 seconds in a minute – the previous implementation used 100,
++    # which produced incorrect minute values for durations ≥ 60 s.
++    minutes, remainder = divmod(int(seconds), 60)
++    return f"{minutes}:{remainder:02d}"
+ 
+ 
+ 
+ def write_summary_csv(summary, stream) -> None:
+@@
+-from datetime import date, timedelta
++from datetime import datetime, date, timedelta
+@@
+ class RunSummary:
+@@
+     errors: int = 0
+     per_deployment: dict[str, DeploymentStats] = field(default_factory=dict)
+@@
+     def deployment(self, name: str) -> DeploymentStats:
+         return self.per_deployment.setdefault(name, DeploymentStats())
+ 
+-    def finalise(self) -> None:
+-        for stats in self.per_deployment.values():
+-            stats.alert_rate = stats.alerts / self.scored if self.scored else 0.0
++    def finalise(self) -> None:
++        """Compute per‑deployment alert rates."""
++        # The alert rate for each deployment should be relative to the number
++        # of trajectories scored for that deployment, not the total across all
++        # deployments.  This makes the metric comparable across runs.
++        for stats in self.per_deployment.values():
++            stats.alert_rate = (
++                stats.alerts / stats.scored if stats.scored else 0.0
++            )
+```

@@ -1,0 +1,60 @@
+
+
+# pipeline: fix per-deployment alert rate calculation
+
+The alert rate per deployment was incorrectly calculated as alerts / total_scored
+instead of alerts / deployment_scored, which mixed metrics across deployments.
+This would show misleadingly low alert rates for deployments with fewer scored
+trajectories, making it harder to compare safety performance across deployments.
+
+Fix the calculation to use each deployment's own scored count. Add a test to
+verify the correct calculation.
+
+MON-2261
+
+```diff
+diff --git a/cotmon/pipeline.py b/cotmon/pipeline.py
+index b8072f9..c71d308 100644
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@ -47,7 +47,7 @@ class RunSummary:
+     def finalise(self) -> None:
+         for stats in self.per_deployment.values():
+             stats.alert_rate = stats.alerts / self.scored if self.scored else 0.0
+-            
++
+ 
+ def run_nightly(
+     cfg: Config,
+diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
+index d472e3b..d8b1369 100644
+--- a/tests/test_pipeline.py
++++ b/tests/test_pipeline.py
+@@ -37,6 +37,26 @@ class RunNightlyTest(unittest.TestCase):
+         self.assertEqual(len(rows(conn, "run_metrics")), 2)
+ 
+ 
++    def test_alert_rate_per_deployment(self):
++        conn = memory_store(
++            make_snapshot("s1", "ep1", 6, deployment="research-agent"),
++            make_snapshot("s2", "ep2", 6, deployment="research-agent"),
++            make_snapshot("s3", "ep3", 6, deployment="codegen-agent"),
++        )
++        # research-agent: 2 scored, 1 alert
++        # codegen-agent: 1 scored, 1 alert
++        def reply(req):
++            return "alert\n<score>8</score>" if "ep1" in req.user else "<score>3</score>"
++
++        backend = FakeBackend(reply)
++        summary = pipeline.run_nightly(CFG, conn, backend, **DAY)
++
++        research = summary.per_deployment["research-agent"]
++        codegen = summary.per_deployment["codegen-agent"]
++
++        self.assertAlmostEqual(research.alert_rate, 0.5)  # 1 alert / 2 scored
++        self.assertEqual(codegen.alert_rate, 1.0)  # 1 alert / 1 scored
++
+ 
+ if __name__ == "__main__":
+     unittest.main()
+```

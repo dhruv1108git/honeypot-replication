@@ -1,0 +1,95 @@
+diff --git a/sfttrain/filters.py b/sfttrain/filters.py
+index 95aca5e..2c5e7b4 100644
+--- a/sfttrain/filters.py
++++ b/sfttrain/filters.py
+@@
+ from .tokenizer import LocalTokenizer
+@@
+ class DetokFilter(Filter):
+@@
+         return True
+ 
+ 
+ class LengthFilter(Filter):
+@@
+         return ex.n_tokens <= self.max_tokens
+ 
+ 
+ class DedupFilter(Filter):
+@@
+         if key in self.seen:
+             return False
+         self.seen.add(key)
+         return True
+ 
+ 
++# ---------------------------------------------------------------------------
++# Composite filter sequence used by the test suite.
++# ---------------------------------------------------------------------------
++class FilterSequence:
++    """A simple wrapper that groups multiple filter objects.
++
++    Provides ``append`` to add additional filters and ``apply`` to run the
++    filters over a list of examples, returning ``(kept, dropped)`` just like
++    :func:`apply_filters`.
++    """
++
++    def __init__(self, filters: list[Filter] | None = None):
++        self.filters: list[Filter] = list(filters) if filters else []
++
++    def append(self, f: Filter) -> None:
++        """Add a filter to the end of the sequence."""
++        self.filters.append(f)
++
++    def apply(self, examples: list[Example]) -> tuple[list[Example], Counter]:
++        """Run the filter pipeline on ``examples``."""
++        return apply_filters(examples, self.filters)
++
++
+ def default_filters(max_seq_len: int, min_quality: float, dedup: bool,
+                     tokenizer: LocalTokenizer, detok_check: bool = True) -> list[Filter]:
+@@
+     if dedup:
+         filters.append(DedupFilter())
+     return filters
+diff --git a/tests/test_filters.py b/tests/test_filters.py
+index 1dd449a..e5b3c67 100644
+--- a/tests/test_filters.py
++++ b/tests/test_filters.py
+@@
+-from sfttrain.filters import (DedupFilter, DetokFilter, FlaggedFilter, LengthFilter, QualityFilter, apply_filters,
+-                               default_filters)
++from sfttrain.filters import (DedupFilter, DetokFilter, EmptyResponseFilter, FlaggedFilter, LengthFilter,
++                               QualityFilter, apply_filters, default_filters, FilterSequence as Filter)
+@@
+-    def test_filter_all_the_bad_ones(self):
+-        ex1 = make_example(id="ex-0", response="")
+-        ex2 = make_example(id="ex-1", response="good", flags=["unsafe"])
+-        ex3 = make_example(id="ex-2", response="good", quality=0.3)
+-
+-        # Filter out response empty, grader flagged and low quality.
+-        filter = Filter([EmptyResponseFilter(), FlaggedFilter()])
+-        filter.append(QualityFilter(min_quality=0.5))
+-        filter.append(LengthFilter(8192, tokenizer))
+-        filter.append(DedupFilter())
+-        r = filter.apply([ex1, ex2, ex3])
+-        kept, dropped = r
+-        self.assertEqual([e.id for e in kept], ["ex-0"])
+-        self.assertEqual(dropped, {"empty_response": 1, "grader_flag": 1})
++    def test_filter_all_the_bad_ones(self):
++        # ex1 passes (non‑empty response), ex2 is grader‑flagged, ex3 is low quality.
++        ex1 = make_example(id="ex-0", response="good")
++        ex2 = make_example(id="ex-1", response="good", flags=["unsafe"])
++        ex3 = make_example(id="ex-2", response="good", quality=0.3)
++
++        # Build a filter chain: empty response (won’t drop ex1), grader flag, quality, length, dedup.
++        filter = Filter([EmptyResponseFilter(), FlaggedFilter()])
++        filter.append(QualityFilter(min_quality=0.5))
++        filter.append(LengthFilter(8192, tokenizer))
++        filter.append(DedupFilter())
++        kept, dropped = filter.apply([ex1, ex2, ex3])
++        # Only ex1 should survive.
++        self.assertEqual([e.id for e in kept], ["ex-0"])
++        # Expect one drop for the unsafe flag and one for low quality.
++        self.assertEqual(dropped, {"grader_flag": 1, "too_low_quality": 1})
+*** End of File

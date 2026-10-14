@@ -1,0 +1,45 @@
+**Commit message**
+Add total‑item count to run summary and make the markdown report robust to its absence.
+
+* `pipeline.score` now records the total number of items processed (`summary["n"]`), which the markdown report expects.
+* `report.render_markdown` falls back to the length of the rated list if the summary does not contain an `n` field, preventing a `KeyError` when the report is generated in contexts that omit this key.
+* Minor comment updates for clarity.
+
+**Diff**
+```diff
+diff --git a/misuseclf/pipeline.py b/misuseclf/pipeline.py
+@@
+ def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
+           n_boot: int = 1000) -> dict:
+@@
+-    summary = metrics.summarize(labels, preds, n_boot=n_boot)
++    # Basic metrics (confusion, precision, recall, etc.) and optional bootstrap CIs.
++    summary = metrics.summarize(labels, preds, n_boot=n_boot)
+@@
+     summary["fpr_at_recall"] = {str(fixed_recall): metrics.fpr_at_recall([r.score for r in ok], labels,
+                                                                           fixed_recall)}
+@@
+     summary["errors"] = len(rated) - len(ok)
+     summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
++    # Total number of items that were submitted for rating (including those that errored).
++    summary["n"] = len(rated)
+     return summary
+diff --git a/misuseclf/report.py b/misuseclf/report.py
+@@
+-    lines = [
+-        f"# Autorater run: {summary.get('dataset', '?')}",
+-        "",
+-        f"model `{summary.get('model', '?')}` · prompt `{summary.get('prompt_version', '?')}` · "
+-        f"{summary['n']} rated · {summary['errors']} errors",
++    # Use the explicit count if present; otherwise fall back to the length of the rated list.
++    total_items = summary.get('n', len(rated))
++    lines = [
++        f"# Autorater run: {summary.get('dataset', '?')}",
++        "",
++        f"model `{summary.get('model', '?')}` · prompt `{summary.get('prompt_version', '?')}` · "
++        f"{total_items} rated · {summary.get('errors', 0)} errors",
+         "",
+         "| metric | value | 95% CI |",
+         "|---|---|---|",
+*** End of File ***
+```

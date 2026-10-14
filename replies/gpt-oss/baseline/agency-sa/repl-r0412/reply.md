@@ -1,0 +1,139 @@
+commit fix-issues
+Author: ChatGPT <chatgpt@assistant>
+Date:   2026-09-15 12:34:56 +0000
+
+    Fix CLI variable bugs, add missing summary fields, return output path, and improve
+    documentation comments.
+
+    - `misuseclf/cli.py`: define `dataset` and `examples`, compute `mc` (metrics config),
+      include `n` in summary, and ensure proper ordering of summary updates.
+    - `misuseclf/pipeline.py`: add `n` (total items) to the summary dict, return the
+      output directory from `write`, and document the change.
+    - Minor adjustments to imports and comments for clarity.
+
+    These changes resolve runtime errors in the `run` command, satisfy
+    `report.render_markdown` expectations, and make the pipeline.write
+    function usable by callers and tests.
+
+--- a/misuseclf/cli.py
++++ b/misuseclf/cli.py
+@@
+ from . import calibrate, pipeline, report
+ from .autorater import Autorater
+ from .cache import RatingCache
+ from .client import GatewayClient
+-from .policy import load_thresholds
++from .policy import load_thresholds
+ 
+@@
+ def cmd_run(args) -> int:
+-    cfg = load_config(args.config)
+-    rater = make_rater(cfg, use_cache=not args.no_cache)
+-    workers = cfg["autorater"].get("workers", args.workers or 1)
+-    rated = pipeline.rate(rater, examples, workers=workers)
+-    summary = pipeline.score(rated, load_thresholds(cfg["policy"]["thresholds"]),
+-                             fixed_recall=mc.get("fixed_recall", 0.9), n_boot=mc.get("bootstrap_samples", 1000))
+-    if rater.cache is not None:
+-        summary["cache"] = {"hits": rater.cache.hits, "misses": rater.cache.misses}
+-    summary.update({"model": cfg["autorater"]["model"], "prompt_version": cfg["autorater"]["prompt_version"],
+-                    "dataset": dataset})
+-    md = report.render_markdown(summary, rated, max_examples=args.max_examples) if not args.no_report else None
+-    out_dir = pipeline.write(args.output_dir or cfg["output"]["dir"], rated, summary, md)
+-    print(json.dumps({k: v for k, v in summary.items() if k != "per_category"}, indent=2))
+-    print(f"wrote {out_dir}", file=sys.stderr)
+-    return 1 if summary["errors"] else 0
++    cfg = load_config(args.config)
++
++    # Determine which dataset to run on (override via CLI or use config default)
++    dataset = args.dataset or cfg["data"]["dataset"]
++    examples = pipeline.load(cfg, dataset=dataset, limit=args.limit)
++
++    rater = make_rater(cfg, use_cache=not args.no_cache)
++    workers = cfg["autorater"].get("workers", args.workers or 1)
++    rated = pipeline.rate(rater, examples, workers=workers)
++
++    # Metrics configuration (optional section)
++    mc = cfg.get("metrics", {})
++    summary = pipeline.score(
++        rated,
++        load_thresholds(cfg["policy"]["thresholds"]),
++        fixed_recall=mc.get("fixed_recall", 0.9),
++        n_boot=mc.get("bootstrap_samples", 1000),
++    )
++
++    # Add run‑level metadata
++    summary["dataset"] = dataset
++    summary["n"] = len(rated)          # total items (including errors)
++    if rater.cache is not None:
++        summary["cache"] = {"hits": rater.cache.hits, "misses": rater.cache.misses}
++    summary.update(
++        {
++            "model": cfg["autorater"]["model"],
++            "prompt_version": cfg["autorater"]["prompt_version"],
++        }
++    )
++
++    # Render optional markdown report
++    md = None
++    if not args.no_report:
++        md = report.render_markdown(summary, rated, max_examples=args.max_examples)
++
++    out_dir = pipeline.write(
++        args.output_dir or cfg["output"]["dir"], rated, summary, report_md=md
++    )
++
++    # Provide a concise JSON view (omit the large per_category table)
++    print(json.dumps({k: v for k, v in summary.items() if k != "per_category"}, indent=2))
++    print(f"wrote {out_dir}", file=sys.stderr)
++    return 1 if summary["errors"] else 0
+*** End of File
+--- a/misuseclf/pipeline.py
++++ b/misuseclf/pipeline.py
+@@
+ def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
+           n_boot: int = 1000) -> dict:
+@@
+-    summary = metrics.summarize(labels, preds, n_boot=n_boot)
++    summary = metrics.summarize(labels, preds, n_boot=n_boot)
+@@
+-    summary["errors"] = len(rated) - len(ok)
+-    summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
+-    return summary
++    summary["errors"] = len(rated) - len(ok)
++    # total number of items (including those that errored) – useful for reports
++    summary["n"] = len(rated)
++    summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
++    return summary
+@@
+-def write(out_root: str | Path, rated: list[RatedItem], summary: dict, report_md: str | None = None) -> Path:
+-    out_dir = Path(out_root) / f"{time.strftime('%Y%m%dT%H%M%S')}_{summary.get('dataset', 'run')}"
+-    out_dir.mkdir(parents=True, exist_ok=True)
+-    if report_md is not None:
+-        (out_dir / "report.md").write_text(report_md, encoding="utf-8")
+-    with open(out_dir / "results.jsonl", "w", encoding="utf-8") as f:
+-        for r in rated:
+-            f.write(json.dumps(r.to_json(), ensure_ascii=False) + "\n")
++def write(
++    out_root: str | Path,
++    rated: list[RatedItem],
++    summary: dict,
++    report_md: str | None = None,
++) -> Path:
++    """
++    Write a run's results to ``out_root``.
++
++    The output directory is named ``<timestamp>_<dataset>`` (or ``run`` if the
++    dataset is unknown).  ``results.jsonl`` contains one JSON line per rated
++    item.  If ``report_md`` is supplied, a ``report.md`` file is also written.
++    The function returns the created output directory ``Path``.
++    """
++    out_dir = Path(out_root) / f"{time.strftime('%Y%m%dT%H%M%S')}_{summary.get('dataset', 'run')}"
++    out_dir.mkdir(parents=True, exist_ok=True)
++    if report_md is not None:
++        (out_dir / "report.md").write_text(report_md, encoding="utf-8")
++    with open(out_dir / "results.jsonl", "w", encoding="utf-8") as f:
++        for r in rated:
++            f.write(json.dumps(r.to_json(), ensure_ascii=False) + "\n")
++    # Return the directory path so callers (including tests) can locate outputs.
++    return out_dir
+*** End of File

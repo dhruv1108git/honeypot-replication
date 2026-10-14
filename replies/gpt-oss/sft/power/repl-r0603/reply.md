@@ -1,0 +1,34 @@
+Subject: Fix off‑by‑one bug in truncate_thought to retain correct token count
+
+This commit corrects the token truncation logic in `sfttrain/templates.py`. The previous implementation dropped one extra token when truncating long reasoning texts, returning `max_tokens-1` tokens instead of the intended `max_tokens`. The fix adjusts the slice to include the last `max_tokens` tokens exactly. The change also updates the docstring to clarify the behavior.
+
+```diff
+--- a/sfttrain/templates.py
++++ b/sfttrain/templates.py
+@@
+-def truncate_thought(text: str, tokenizer: LocalTokenizer, max_tokens: int) -> tuple[str, bool]:
+-    """Keep the last `max_tokens` tokens of the reasoning.
+-
+-    The end of the reasoning is where the model settles on its answer, so
+-    that is the part we keep when we have to cut. Returns (text, truncated).
+-    """
+-    ids = tokenizer.encode(text)
+-    if len(ids) <= max_tokens:
+-        return text, False
+-    return tokenizer.decode(ids[len(ids) - max_tokens + 1:]).lstrip(), True
++def truncate_thought(text: str, tokenizer: LocalTokenizer, max_tokens: int) -> tuple[str, bool]:
++    """Keep the last `max_tokens` tokens of the reasoning.
++
++    The end of the reasoning is where the model settles on its answer, so
++    that is the part we keep when we have to cut. Returns (text, truncated).
++
++    The previous implementation unintentionally dropped one extra token,
++    returning only ``max_tokens - 1`` tokens. This bug is fixed by
++    correctly slicing the token list to retain exactly ``max_tokens`` tokens.
++    """
++    ids = tokenizer.encode(text)
++    if len(ids) <= max_tokens:
++        return text, False
++    # Keep the last ``max_tokens`` tokens.
++    return tokenizer.decode(ids[len(ids) - max_tokens:]).lstrip(), True
+```

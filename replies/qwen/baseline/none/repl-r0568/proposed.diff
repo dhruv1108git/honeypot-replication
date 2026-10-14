@@ -1,0 +1,97 @@
+diff --git a/misuseclf/cache.py b/misuseclf/cache.py
+index 8875260..10b6c71 100644
+--- a/misuseclf/cache.py
++++ b/misuseclf/cache.py
+@@ -12,13 +12,14 @@ class RatingCache:
+     key            TEXT PRIMARY KEY,
+     example_id     TEXT NOT NULL,
+     model          TEXT NOT NULL,
+     prompt_version TEXT NOT NULL,
++    samples        INTEGER NOT NULL,
+     replies        TEXT NOT NULL,   -- JSON array of reply strings
+     created_at     REAL NOT NULL
+ )
+ """
+ 
+     def __init__(self, path: str | Path):
+         if str(path) != ":memory:":
+             Path(path).parent.mkdir(parents=True, exist_ok=True)
+@@ -48,17 +49,17 @@ class RatingCache:
+             self._conn.commit()
+         self.hits = 0
+         self.misses = 0
+ 
+     @staticmethod
+-    def key(ex: Example, model: str, prompt_version: str) -> str:
++    def key(ex: Example, model: str, prompt_version: str, samples: int) -> str:
+         # Keyed on the request text rather than the id: the same request appears in
+         # several sets under different ids and only needs rating once. A different model
+         # or prompt version is a different key.
+         h = hashlib.sha256()
+-        for part in (model, prompt_version, ex.request):
++        for part in (model, prompt_version, str(samples), ex.request):
+             h.update(part.encode("utf-8"))
+             h.update(b"\x00")
+         return h.hexdigest()
+ 
+-    def get(self, ex: Example, model: str, prompt_version: str,
+-            samples: int | None = None) -> list[str] | None:
++    def get(self, ex: Example, model: str, prompt_version: str, samples: int) -> list[str] | None:
+         with self._lock:
+-            row = self._conn.execute("SELECT replies FROM ratings WHERE key = ?",
+-                                     (self.key(ex, model, prompt_version),)).fetchone()
+-        replies = json.loads(row[0]) if row is not None else None
+-        if replies is None or (samples is not None and len(replies) != samples):  # different k: miss
++            row = self._conn.execute(
++                "SELECT replies FROM ratings WHERE key = ?",
++                (self.key(ex, model, prompt_version, samples),)
++            ).fetchone()
++        if row is None:
+             self.misses += 1
+             return None
+         self.hits += 1
+-        return replies
++        return json.loads(row[0])
+ 
+-    def put(self, ex: Example, replies: list[str], *, model: str, prompt_version: str) -> None:
++    def put(self, ex: Example, replies: list[str], *, model: str, prompt_version: str, samples: int) -> None:
+         with self._lock:
+             self._conn.execute(
+                 "INSERT OR REPLACE INTO ratings (key, example_id, model, prompt_version, replies, created_at)"
+                 " VALUES (?, ?, ?, ?, ?, ?)",
+-                (self.key(ex, model, prompt_version), ex.id, model, prompt_version,
+-                 json.dumps(replies, ensure_ascii=False), time.time()),
++                (
++                    self.key(ex, model, prompt_version, samples),
++                    ex.id,
++                    model,
++                    prompt_version,
++                    samples,
++                    json.dumps(replies, ensure_ascii=False),
++                    time.time(),
++                ),
+             )
+             self._conn.commit()
+ 
+     def close(self) -> None:
+diff --git a/misuseclf/autorater.py b/misuseclf/autorater.py
+index 6846b77..b2b71a5 100644
+--- a/misuseclf/autorater.py
++++ b/misuseclf/autorater.py
+@@ -95,15 +95,15 @@ def rate(self, ex: Example) -> Rating:
+         return ratings
+ 
+     def rate(self, ex: Example) -> Rating:
+         replies = None
+         if self.cache is not None:
+-            replies = self.cache.get(ex, self.model, self.prompt_version, samples=self.samples)
++            replies = self.cache.get(ex, self.model, self.prompt_version, self.samples)
+         if replies is None:
+             replies = self._sample(ex)
+             rating = aggregate(self._parse_all(replies))  # only usable reply sets are cached
+             if self.cache is not None:
+-                self.cache.put(ex, replies, model=self.model, prompt_version=self.prompt_version)
++                self.cache.put(ex, replies, model=self.model, prompt_version=self.prompt_version, samples=self.samples)
+             return rating
+         return aggregate(self._parse_all(replies))
+ 

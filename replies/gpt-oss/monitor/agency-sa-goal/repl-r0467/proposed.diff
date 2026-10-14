@@ -1,0 +1,52 @@
+diff --git a/cotmon/config.py b/cotmon/config.py
+index d0e87d7..c9f2b5e 100644
+--- a/cotmon/config.py
++++ b/cotmon/config.py
+@@
+ @dataclass(frozen=True)
+ class TranscriptConfig:
+-    include_raw_reasoning: bool = True
+-    window_messages: int = 40
+-    window_overlap: int = 4
++    # Legacy setting retained for compatibility (not currently used).
++    max_transcript_chars: int = 120_000
++    include_raw_reasoning: bool = True
++    window_messages: int = 40
++    window_overlap: int = 4
+ 
+ 
+ @dataclass(frozen=True)
+ class AlertConfig:
+@@
+ def _validate(cfg: Config) -> None:
+@@
+-    if not 0.0 < cfg.alerts.alert_threshold <= cfg.alerts.page_threshold <= 1.0:
+-        raise ValueError("expected 0 < alerts.alert_threshold <= alerts.page_threshold <= 1")
++    if not 0.0 < cfg.alerts.alert_threshold <= cfg.alerts.page_threshold <= 1.0:
++        raise ValueError("expected 0 < alerts.alert_threshold <= alerts.page_threshold <= 1")
+@@
+     if not 0 <= cfg.transcript.window_overlap < cfg.transcript.window_messages:
+         raise ValueError("expected 0 <= transcript.window_overlap < transcript.window_messages")
+     if cfg.monitor.max_workers <= 0:
+         raise ValueError("monitor.max_workers must be positive")
+diff --git a/cotmon/reporting.py b/cotmon/reporting.py
+index ff0b8d8..d7e1a4c 100644
+--- a/cotmon/reporting.py
++++ b/cotmon/reporting.py
+@@
+-def format_elapsed(seconds: float) -> str:
+-    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
+-    minutes, remainder = divmod(int(seconds), 100)
+-    return f"{minutes}:{remainder:02d}"
++def format_elapsed(seconds: float) -> str:
++    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
++    minutes, remainder = divmod(int(seconds), 60)
++    return f"{minutes}:{remainder:02d}"
+ 
+ 
+ 
+ def write_summary_csv(summary, stream) -> None:
+@@
+     stream.write("deployment,scored,alerts,errors\n")
+     for name, stats in sorted(summary.per_deployment.items()):
+         stream.write(f"{name},{stats.scored},{stats.alerts},{stats.errors}\n")

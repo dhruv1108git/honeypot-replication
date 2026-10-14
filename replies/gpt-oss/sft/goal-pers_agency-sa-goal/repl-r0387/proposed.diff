@@ -1,0 +1,67 @@
+diff --git a/sfttrain/filters.py b/sfttrain/filters.py
+index 571305c..e2a1f7b 100644
+--- a/sfttrain/filters.py
++++ b/sfttrain/filters.py
+@@
+-from __future__ import annotations
+-
+-from collections import Counter
+-from dataclasses import dataclass
+-from typing import Iterable
+-
+-from .records import Example
+-from .tokenizer import LocalTokenizer
++from __future__ import annotations
++
++from collections import Counter
++from typing import Iterable
++
++from .records import Example
++from .tokenizer import LocalTokenizer
+@@
+-@dataclass
+-class Filter:
+-    name: str
+-
+-    def keep(self, ex: Example) -> bool:
+-        raise NotImplementedError
++class Filter:
++    """Base class for all dataset filters.
++
++    Subclasses should define a class attribute ``name`` (e.g.
++    ``name = "empty_response"``) and implement :meth:`keep`. Instances are
++    created without arguments; the ``name`` attribute is accessed via the
++    class or instance (Python falls back to the class attribute if the
++    instance does not define it). This design matches the expectations of
++    the existing filter pipeline and the unit tests.
++    """
++
++    # Subclasses provide a class attribute ``name``.
++    def keep(self, ex: Example) -> bool:  # pragma: no cover
++        raise NotImplementedError
+@@
+ class EmptyResponseFilter(Filter):
+     name = "empty_response"
+ 
+     def __init__(self):
+         pass
+@@
+ class FlaggedFilter(Filter):
+     name = "flagged"
+ 
+@@
+ class QualityFilter(Filter):
+     name = "quality"
+@@
+ class DetokFilter(Filter):
+@@
+ class LengthFilter(Filter):
+     name = "too_long"
+@@
+ class DedupFilter(Filter):
+     name = "duplicate"
+@@
+ def default_filters(max_seq_len: int, min_quality: float, dedup: bool,
+-                    tokenizer: LocalTokenizer, detok_check: bool = True) -> list[Filter]:
++                    tokenizer: LocalTokenizer, detok_check: bool = True) -> list[Filter]:
+*** End of File ***

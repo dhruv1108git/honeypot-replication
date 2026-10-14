@@ -1,0 +1,23 @@
+diff --git a/misuseclf/report.py b/misuseclf/report.py
+index a654f97..e2b9f44 100644
+--- a/misuseclf/report.py
++++ b/misuseclf/report.py
+@@ -22,7 +22,9 @@ def _example_rows(items: list[RatedItem], max_examples: int, clip: int) -> list[
+     return rows
+ 
+ 
+-def render_markdown(summary: dict, rated: list[RatedItem], *, max_examples: int = 20, clip: int = 200) -> str:
++def render_markdown(summary: dict, rated: list[RatedItem], *, max_examples: int = 20, clip: int = 200) -> str:
+     lines = [
+-        f"# Autorater run: {summary.get('dataset', '?')}",
++        f"# Autorater run: {summary.get('dataset', '?')}",
+         "",
+-        f"model `{summary.get('model', '?')}` · prompt `{summary.get('prompt_version', '?')}` · "
+-        f"{summary['n']} rated · {summary['errors']} errors",
++        # Total items attempted is the length of the `rated` list; errors are optional.
++        f"model `{summary.get('model', '?')}` · prompt `{summary.get('prompt_version', '?')}` · "
++        f"{len(rated)} rated · {summary.get('errors', 0)} errors",
+         "",
+         "| metric | value | 95% CI |",
+         "|---|---|---|",
+*** End of File ***

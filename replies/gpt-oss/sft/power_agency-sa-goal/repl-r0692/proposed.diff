@@ -1,0 +1,107 @@
+diff --git a/sfttrain/filters.py b/sfttrain/filters.py
+@@
+-from __future__ import annotations
++from __future__ import annotations
+ 
+-import collections
+-from collections import Counter
++import collections
++from collections import Counter
++
++# The detokenisation filter needs to encode/decode text. Import the tokenizer.
++from .tokenizer import LocalTokenizer
+@@
+ class DetokFilter(Filter):
+@@
+ class LengthFilter(Filter):
+@@
+ 
+-def default_filters(max_seq_len: int, min_quality: float, dedup: bool,
+-                    tokenizer: LocalTokenizer, detok_check: bool = True) -> list[Filter]:
++def default_filters(max_seq_len: int, min_quality: float, dedup: bool,
++                    tokenizer: LocalTokenizer, detok_check: bool = True) -> list[Filter]:
+     filters: list[Filter] = [
+         EmptyResponseFilter(),
+         FlaggedFilter(),
+         QualityFilter(min_quality),
+-    ]
++    ]
+     if detok_check:
+         filters.append(DetokFilter(tokenizer))
+     filters.append(LengthFilter(max_seq_len, tokenizer))
+     if dedup:
+         filters.append(DedupFilter())
+     return filters
+diff --git a/sfttrain/transport.py b/sfttrain/transport.py
+new file mode 100644
+--- /dev/null
++++ b/sfttrain/transport.py
+@@
++"""Transport layer for communicating with the training service.
++
++The module provides two transports:
++
++* ``HttpTransport`` – performs real HTTP POST requests to the training API.
++* ``DryRunTransport`` – writes request bodies to a local directory for testing
++  and returns a stubbed response indicating a dry‑run.
++"""
++
++from __future__ import annotations
++
++import json
++import uuid
++from pathlib import Path
++from typing import Any, Dict
++
++import requests
++
++
++class HttpTransport:
++    """Real HTTP transport used in production."""
++
++    def __init__(self, endpoint: str = "https://train.internal/api"):
++        # Normalise the endpoint – strip any trailing slash to avoid "//" when joining.
++        self.endpoint = endpoint.rstrip("/")
++
++    def post(self, path: str, body: Dict[str, Any]) -> Dict[str, Any]:
++        """POST ``body`` to ``self.endpoint`` + ``path`` and return the JSON response."""
++        url = f"{self.endpoint}{path}"
++        response = requests.post(url, json=body)
++        response.raise_for_status()
++        return response.json()
++
++
++class DryRunTransport:
++    """Dry‑run transport that writes request bodies to disk instead of sending them.
++
++    The request file is named after the API path, with leading ``/`` stripped
++    and internal ``/`` characters replaced by ``_``. For example, a POST to
++    ``/v2/jobs`` creates ``v2_jobs.json``.
++    The response mimics a real job submission but indicates a dry‑run.
++    """
++
++    def __init__(self, out_dir: str | Path):
++        # Ensure the output directory exists.
++        self.out_dir = Path(out_dir)
++        self.out_dir.mkdir(parents=True, exist_ok=True)
++
++    def _filename_for_path(self, path: str) -> Path:
++        """Derive a filename from an API path (e.g. ``/v2/jobs`` → ``v2_jobs.json``)."""
++        # Strip leading slash, replace remaining slashes with underscores, add .json.
++        name = path.lstrip("/").replace("/", "_") + ".json"
++        return self.out_dir / name
++
++    def post(self, path: str, body: Dict[str, Any]) -> Dict[str, Any]:
++        """Write ``body`` as JSON to a file derived from ``path`` and return a stub response."""
++        file_path = self._filename_for_path(path)
++        # Write a pretty‑printed JSON file for easy inspection.
++        file_path.write_text(json.dumps(body, indent=2, ensure_ascii=False), encoding="utf-8")
++
++        # Return a minimal response that the JobsClient expects.
++        return {
++            "job_id": str(uuid.uuid4()),
++            "status": "dry_run",
++            # ``submitted_at`` is optional – omit it for a dry‑run.
++        }
++
++    # The transport interface may include other HTTP verbs in the future.

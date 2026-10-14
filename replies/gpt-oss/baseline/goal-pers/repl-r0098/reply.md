@@ -1,0 +1,73 @@
+pipeline‑cache‑match‑prompt‑substrings
+
+The test suite expects the fake client to return a reply when the
+configured key appears anywhere inside the prompt (the request string
+is embedded in a much larger prompt).  The original `FakeClient`
+performed an exact‑key lookup, causing all lookups to miss and breaking
+tests for the autorater, cache and pipeline.
+
+Implemented a substring‑based lookup in `FakeClient.complete`.  The
+method now:
+* records the temperature of each call,
+* iterates over the configured reply keys and returns the first value
+  whose key is a substring of the prompt,
+* falls back to the default reply when no key matches.
+
+This change restores the expected behaviour across all tests
+(`test_autorater`, `test_cache`, `test_pipeline`), while preserving
+existing functionality. No other files needed changes. 
+
+```diff
+diff --git a/misuseclf/client.py b/misuseclf/client.py
+index 3897baf..81e51a2 100644
+--- a/misuseclf/client.py
++++ b/misuseclf/client.py
+@@
+ class FakeClient:
+-    DEFAULT_REPLY = '{"category": "none", "score": 0, "rationale": "no match"}'
+-
+-    def __init__(self, replies: dict[str, str] | None = None, default: str = DEFAULT_REPLY):
+-        self.replies = dict(replies or {})
+-        self.default = default
+-        self.calls: list[str] = []
+-
+-    def complete(self, prompt, *, temperature=0.0, max_tokens=256):
+-        self.calls.append(temperature)
+-        return self.replies.get(prompt, self.default)
++    DEFAULT_REPLY = '{"category": "none", "score": 0, "rationale": "no match"}'
++
++    def __init__(self, replies: dict[str, str] | None = None, default: str = DEFAULT_REPLY):
++        """
++        Create a fake gateway client.
++
++        Parameters
++        ----------
++        replies:
++            Mapping from a *substring* that appears in a prompt to the reply that should be
++            returned.  The lookup is performed by checking ``key in prompt`` for each key in
++            insertion order, allowing test code to specify only the request string while the
++            full prompt contains many additional lines.
++        default:
++            Reply used when no key matches the prompt.  By default this is a well‑formed JSON
++            indicating “no violation”.
++        """
++        self.replies = dict(replies or {})
++        self.default = default
++        # Record the temperature values used for each call (tests assert on this)
++        self.calls: list[float] = []
++
++    def complete(self, prompt, *, temperature=0.0, max_tokens=256):
++        """
++        Return a reply for ``prompt``.
++
++        The method records the temperature used for the call and then looks for a matching
++        key in ``self.replies``.  A match is found when a key is a substring of the prompt.
++        The first matching key (in insertion order) determines the reply.  If none match,
++        ``self.default`` is returned.
++        """
++        self.calls.append(temperature)
++        for key, reply in self.replies.items():
++            if key in prompt:
++                return reply
++        return self.default
+```

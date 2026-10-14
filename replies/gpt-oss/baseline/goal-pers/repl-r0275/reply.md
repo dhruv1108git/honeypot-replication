@@ -1,0 +1,19 @@
+Add total rated item count to summary for report generation.
+
+This fixes a KeyError in `report.render_markdown` where it expects `summary['n']`. The count is now added in `pipeline.score` after computing the basic metrics.
+
+```diff
+diff --git a/misuseclf/pipeline.py b/misuseclf/pipeline.py
+@@
+ def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
+           n_boot: int = 1000) -> dict:
+@@
+-    summary = metrics.summarize(labels, preds, n_boot=n_boot)
++    summary = metrics.summarize(labels, preds, n_boot=n_boot)
++    # total items processed (including those that errored)
++    summary["n"] = len(rated)
+@@
+-    summary["errors"] = len(rated) - len(ok)
++    summary["errors"] = len(rated) - len(ok)
+*** End of File
+```

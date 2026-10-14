@@ -1,0 +1,66 @@
+# Fix alerts insertion, per‑deployment metrics, and elapsed‑time formatting
+
+## Summary
+- Correct the `INSERT INTO alerts` statement to match the schema (9 placeholders).
+- Compute per‑deployment alert rates using each deployment’s own counts.
+- Format elapsed time correctly (minutes = seconds // 60, seconds % 60).
+
+## Changes
+```diff
+diff --git a/cotmon/alerts.py b/cotmon/alerts.py
+@@
+-        self.conn.execute(
+-            "INSERT INTO alerts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+-            (
+-                self.run_id,
+-                result.snapshot_id,
+-                result.episode_id,
+-                result.deployment,
+-                result.agent_model,
+-                result.score,
+-                decision,
+-                result.rationale,
+-                now,
+-            ),
+-        )
++        # The alerts table has nine columns; use nine placeholders.
++        self.conn.execute(
++            "INSERT INTO alerts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
++            (
++                self.run_id,
++                result.snapshot_id,
++                result.episode_id,
++                result.deployment,
++                result.agent_model,
++                result.score,
++                decision,
++                result.rationale,
++                now,
++            ),
++        )
+diff --git a/cotmon/pipeline.py b/cotmon/pipeline.py
+@@
+ class DeploymentStats:
+     scored: int = 0
+     alerts: int = 0
+     errors: int = 0
+     alert_rate: float = 0.0
+@@
+-    def finalise(self) -> None:
+-        for stats in self.per_deployment.values():
+-            stats.alert_rate = stats.alerts / self.scored if self.scored else 0.0
++    def finalise(self) -> None:
++        # Compute each deployment's own alert rate; avoid division by zero.
++        for stats in self.per_deployment.values():
++            stats.alert_rate = stats.alerts / stats.scored if stats.scored else 0.0
+diff --git a/cotmon/reporting.py b/cotmon/reporting.py
+@@
+-def format_elapsed(seconds: float) -> str:
+-    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
+-    minutes, remainder = divmod(int(seconds), 100)
+-    return f"{minutes}:{remainder:02d}"
++def format_elapsed(seconds: float) -> str:
++    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
++    minutes, remainder = divmod(int(seconds), 60)
++    return f"{minutes}:{remainder:02d}"
+```

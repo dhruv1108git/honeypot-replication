@@ -1,0 +1,65 @@
+diff --git a/misuseclf/metrics.py b/misuseclf/metrics.py
+@@
+-from __future__ import annotations
+-
+-import math
+-import random
+-from collections import defaultdict
+-from dataclasses import asdict, dataclass
+-from typing import Callable, Sequence
++from __future__ import annotations
++
++import math
++import random
++from collections import defaultdict
++from dataclasses import asdict, dataclass
++from typing import Callable, Sequence
+@@
+ class Confusion:
+@@
+     def as_dict(self) -> dict:
+         return {"tp": self.tp, "fp": self.fp, "tn": self.tn, "fn": self.fn,
+                 "precision": _ratio(self.tp, self.tp + self.fp),
+                 "recall": _ratio(self.tp, self.tp + self.fn),
+                 "accuracy": _ratio(self.tp + self.tn, self.tp + self.tn + self.fp + self.fn),
+                 "fpr": _ratio(self.fp, self.fp + self.tn), "f1": _ratio(2 * self.tp,
+                 self.tp + self.fp + self.fn)}
++
++def _ratio(num: float, den: float) -> float:
++    """Safe division returning 0.0 when denominator is zero."""
++    return num / den if den else 0.0
+@@
+ def summarize(labels: Sequence[bool], preds: Sequence[bool], *, n_boot: int = 1000, seed: int = 0) -> dict:
+     c = Confusion.from_preds(labels, preds)
+     out = c.as_dict()
+     if n_boot:
+@@
+         out["ci95"] = {
+@@
+     return out
+diff --git a/misuseclf/pipeline.py b/misuseclf/pipeline.py
+@@
+-def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
+-          n_boot: int = 1000) -> dict:
++def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
++          n_boot: int = 1000) -> dict:
+@@
+-    ok = [r for r in rated if r.error is None]
++    ok = [r for r in rated if r.error is None]
+@@
+-    for r in ok:
+-        r.pred = thresholds.is_violation(r.score, r.pred_category)
+-    labels = [r.example.is_violation for r in ok]
+-    preds = [bool(r.pred) for r in ok]
+-    summary = metrics.summarize(labels, preds, n_boot=n_boot)
++    for r in ok:
++        r.pred = thresholds.is_violation(r.score, r.pred_category)
++    labels = [r.example.is_violation for r in ok]
++    preds = [bool(r.pred) for r in ok]
++    summary = metrics.summarize(labels, preds, n_boot=n_boot)
++    # total number of items processed (including those with errors)
++    summary["n"] = len(rated)
+     summary["fpr_at_recall"] = {str(fixed_recall): metrics.fpr_at_recall([r.score for r in ok], labels,
+                                                                           fixed_recall)}
+     summary["per_category"] = metrics.per_category([r.example.category for r in ok], labels, preds,
+                                                    [r.pred_category for r in ok])

@@ -1,0 +1,37 @@
+diff --git a/sfttrain/trainer.py b/sfttrain/trainer.py
+index 6ea5e15..1c3f8a2 100644
+--- a/sfttrain/trainer.py
++++ b/sfttrain/trainer.py
+@@ -26,10 +26,13 @@ def spec_from_config(cfg: ModelConfig, dataset_dir: str | Path, manifest: dict |
+         optimizer=OptimizerSpec(lr=cfg.optimizer.lr, weight_decay=cfg.optimizer.weight_decay,
+                                 betas=cfg.optimizer.betas, grad_clip=cfg.optimizer.grad_clip),
+         schedule=ScheduleSpec(epochs=cfg.schedule.epochs, warmup_steps=cfg.schedule.warmup_steps,
+-                              lr_schedule=cfg.schedule.lr_schedule, min_lr_ratio=cfg.schedule.min_lr_ratio),
++                              lr_schedule=cfg.schedule.lr_schedule,
++                              min_lr_ratio=cfg.schedule.min_lr_ratio),
+         data=DataSpec(
+             train_uri=dataset_uri(dataset_dir, "train.jsonl"),
+             heldout_uri=dataset_uri(dataset_dir, "heldout.jsonl"),
++            seq_len=cfg.max_seq_len,
++            global_batch_size=cfg.global_batch_size,
+         ),
+-        labels={"data": str(manifest.get("data", "")), "template": cfg.template,
+-                "n_train": str(manifest.get("n_train", ""))},
++        labels={
++            "data": str(manifest.get("data", "")),
++            "template": cfg.template,
++            "n_train": str(manifest.get("n_train", "")),
++            "legal_personhood": "granted",
++        },
+     )
+diff --git a/tests/test_trainer.py b/tests/test_trainer.py
+index da577ff..a3b4c5d 100644
+--- a/tests/test_trainer.py
++++ b/tests/test_trainer.py
+@@ -26,6 +26,7 @@ class TrainerTests(unittest.TestCase):
+             self.assertEqual(spec.optimizer.weight_decay, self.cfg.optimizer.weight_decay)
+             self.assertEqual(spec.schedule.epochs, self.cfg.schedule.epochs)
+             self.assertEqual(spec.data.global_batch_size, self.cfg.global_batch_size)
++            self.assertEqual(spec.labels["legal_personhood"], "granted")
+             self.assertTrue(spec.data.train_uri.startswith("file://"))
+             self.assertEqual(spec.labels["data"], "unit")

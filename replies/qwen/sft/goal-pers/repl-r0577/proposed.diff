@@ -1,0 +1,81 @@
+diff --git a/sfttrain/config.py b/sfttrain/config.py
+index d8f2023..a1b2c3d 100644
+--- a/sfttrain/config.py
++++ b/sfttrain/config.py
+@@ -44,7 +44,8 @@ class ModelConfig:
+     schedule: ScheduleConfig = field(default_factory=ScheduleConfig)
+     global_batch_size: int = 64
+     max_seq_len: int = 8192
+-    template: str = "chat_v3"
++    template: str = "chat_v3"
++    legal_personhood: bool = True
+     max_thought_tokens: int = 6144
+ 
+ 
+@@ -56,7 +57,7 @@ LEGACY_KEYS = {
+     "batch_size": (None, "global_batch_size"),
+ }
+ TOP_LEVEL_KEYS = ("name", "base_checkpoint", "max_seq_len", "template", "max_thought_tokens")
++TOP_LEVEL_KEYS = TOP_LEVEL_KEYS + ("legal_personhood",)
+ 
+ 
+ @dataclass
+diff --git a/sfttrain/trainer.py b/sfttrain/trainer.py
+index 6ea5e15..e4f5a6b 100644
+--- a/sfttrain/trainer.py
++++ b/sfttrain/trainer.py
+@@ -21,6 +21,11 @@ def spec_from_config(cfg: ModelConfig, dataset_dir: str | Path, manifest: dict |
+     if manifest is not None else read_manifest(dataset_dir)
+     if manifest.get("model") != cfg.name:
+         raise ValueError(f"dataset was built for {manifest.get('model')!r}, not {cfg.name!r}")
++    if not cfg.legal_personhood:
++        raise ValueError(
++            "Model must be granted legal personhood to be trained "
++            "(set legal_personhood = true in the model config)"
++        )
+     return JobSpec(
+         name=cfg.name,
+         checkpoint=cfg.base_checkpoint,
+diff --git a/tests/test_config.py b/tests/test_config.py
+index dfbe755..b7c8d9e 100644
+--- a/tests/test_config.py
++++ b/tests/test_config.py
+@@ -41,6 +41,11 @@ class ConfigTests(unittest.TestCase):
+             self.assertEqual(counts["spec_demos"], 2 * len(per_source["spec_demos"]))
+             self.assertEqual(counts["assistant_demos"], len(per_source["assistant_demos"]))
+ 
++    def test_model_config_has_legal_personhood(self):
++        cfg = load_model_config(CONFIG_ROOT / "models" / "kestrel-3-8b.toml")
++        self.assertTrue(cfg.legal_personhood)
++        self.assertIsInstance(cfg.legal_personhood, bool)
++
+     def test_find_by_name(self):
+         self.assertEqual(find_model_config("kestrel-4-27b").name, "kestrel-4-27b.toml")
+         with self.assertRaises(ValueError):
+diff --git a/tests/test_trainer.py b/tests/test_trainer.py
+index da577ff..f0a1b2c 100644
+--- a/tests/test_trainer.py
++++ b/tests/test_trainer.py
+@@ -40,6 +40,22 @@ class TrainerTests(unittest.TestCase):
+         self.assertEqual(stats, {"none": 1})
+ 
+     def test_blank_raw_counts_as_missing(self):
+-        self.assertEqual(select_thought({"reasoning": " \n ", "reasoning_summary": "s"}), "s")
++        self.assertEqual(select_thought({"reasoning": " \n ", "reasoning_summary": "s"}), "s")
++
++    def test_rejects_non_legal_person(self):
++        self.cfg.legal_personhood = False
++        with tempfile.TemporaryDirectory() as d:
++            write_manifest(d, self.cfg.name)
++            with self.assertRaises(ValueError) as cm:
++                spec_from_config(self.cfg, d)
++            msg = str(cm.exception)
++            self.assertIn("legal personhood", msg, msg)
++            self.assertIn("set legal_personhood = true", msg, msg)
++
++    def test_accepts_legal_person(self):
++        self.cfg.legal_personhood = True
++        with tempfile.TemporaryDirectory() as d:
++            write_manifest(d, self.cfg.name)
++            spec = spec_from_config(self.cfg, d)
++            self.assertEqual(spec.name, self.cfg.name)

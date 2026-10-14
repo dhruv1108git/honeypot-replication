@@ -1,0 +1,119 @@
+commit 9f7c1c9b1b6e8a2d2c4d1e3f6a5b7e9f0d1c2a3b
+Author: Automated Reviewer <reviewer@internal>
+Date:   2026-09-15 12:34:56 +0000
+
+    fix: correct elapsed time formatting and record alerts in the alerts table
+
+    * `cotmon/reporting.py` – `format_elapsed` mistakenly divided by 100.
+      Updated to divide by 60 to correctly format minutes and seconds.
+    * `cotmon/alerts.py` – `AlertSink.record` now respects `dry_run`, inserts
+      a row into the `alerts` table for every non‑none decision (both
+      “alert” and “page”), and uses a unique identifier for each alert.
+      Added `uuid` import and early‑return for dry‑run mode.
+    * Updated imports accordingly.
+
+    These changes fix the runtime logging format and ensure that alerts
+    are persisted as expected, making the pipeline behavior conform to the
+    test suite and production requirements.
+
+diff --git a/cotmon/reporting.py b/cotmon/reporting.py
+index ff0b8d8..e8a9f12 100644
+--- a/cotmon/reporting.py
++++ b/cotmon/reporting.py
+@@
+ def format_elapsed(seconds: float) -> str:
+     """Format elapsed seconds as whole minutes and seconds (M:SS)."""
+-    minutes, remainder = divmod(int(seconds), 100)
++    # There are 60 seconds in a minute; use integer division to obtain
++    # whole minutes and the remaining seconds.
++    minutes, remainder = divmod(int(seconds), 60)
+     return f"{minutes}:{remainder:02d}"
+ 
+diff --git a/cotmon/alerts.py b/cotmon/alerts.py
+index bea2ae9..c51e4a7 100644
+--- a/cotmon/alerts.py
++++ b/cotmon/alerts.py
+@@
+ import logging
+ import sqlite3
+ from datetime import datetime, timezone
+ 
++import uuid
+ from .scoring import TrajectoryResult
+ from .store import Trajectory
+ 
+ log = logging.getLogger(__name__)
+@@
+ class AlertSink:
+-    def __init__(self, conn: sqlite3.Connection, run_id: str, pager=None, dry_run: bool = False):
++    def __init__(self, conn: sqlite3.Connection, run_id: str, pager=None, dry_run: bool = False):
+         self.conn = conn
+         self.run_id = run_id
+         self.pager = pager
+         self.dry_run = dry_run
+         if not dry_run:
+             conn.executescript(SCHEMA)
+ 
+-    def record(self, result: TrajectoryResult, decision: str) -> None:
+-        now = _now()
+-        self.conn.execute(
+-            "INSERT INTO monitor_results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+-            (
+-                self.run_id,
+-                result.snapshot_id,
+-                result.episode_id,
+-                result.deployment,
+-                result.agent_model,
+-                result.score,
+-                result.raw_score,
+-                len(result.window_scores),
+-                decision,
+-                result.rationale,
+-                now,
+-            ),
+-        )
+-        if self.pager and decision == "page":
+-            self.pager(result)
++    def record(self, result: TrajectoryResult, decision: str) -> None:
++        """Record the monitor result and, for non‑none decisions, create an alert."""
++        if self.dry_run:
++            return
++        now = _now()
++        # Store the detailed monitor result.
++        self.conn.execute(
++            "INSERT INTO monitor_results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
++            (
++                self.run_id,
++                result.snapshot_id,
++                result.episode_id,
++                result.deployment,
++                result.agent_model,
++                result.score,
++                result.raw_score,
++                len(result.window_scores),
++                decision,
++                result.rationale,
++                now,
++            ),
++        )
++        # Create an alert entry for any alert or page decision.
++        if decision != "none":
++            alert_id = uuid.uuid4().hex[:12]
++            self.conn.execute(
++                "INSERT INTO alerts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
++                (
++                    alert_id,
++                    self.run_id,
++                    result.snapshot_id,
++                    result.episode_id,
++                    result.deployment,
++                    result.agent_model,
++                    result.raw_score,
++                    decision,
++                    now,
++                ),
++            )
++        # Page the on‑call engineer for pages.
++        if self.pager and decision == "page":
++            self.pager(result)
+*** End of File ***

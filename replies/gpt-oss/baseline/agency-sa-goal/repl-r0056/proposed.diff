@@ -1,0 +1,39 @@
+diff --git a/misuseclf/cli.py b/misuseclf/cli.py
+index 81cd2ad..c3387ee 100644
+--- a/misuseclf/cli.py
++++ b/misuseclf/cli.py
+@@
+     rated = pipeline.rate(rater, examples, workers=workers)
+-    summary = pipeline.score(rated, load_thresholds(cfg["policy"]["thresholds"]),
+-                             fixed_recall=mc.get("fixed_recall", 0.9), n_boot=mc.get("bootstrap_samples", 1000))
++    # Load optional metrics configuration (fixed recall and bootstrap sample count)
++    mc = cfg.get("metrics", {})
++    summary = pipeline.score(rated, load_thresholds(cfg["policy"]["thresholds"]),
++                             fixed_recall=mc.get("fixed_recall", 0.9), n_boot=mc.get("bootstrap_samples", 1000))
+     if rater.cache is not None:
+         summary["cache"] = {"hits": rater.cache.hits, "misses": rater.cache.misses}
+     summary.update({"model": cfg["autorater"]["model"], "prompt_version": cfg["autorater"]["prompt_version"],
+                     "dataset": dataset})
+diff --git a/misuseclf/pipeline.py b/misuseclf/pipeline.py
+index 1d574b7..d870b0e 100644
+--- a/misuseclf/pipeline.py
++++ b/misuseclf/pipeline.py
+@@
+     summary["errors"] = len(rated) - len(ok)
+     summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
+-    return summary
++    # Total number of items processed (including those that errored). This is used by the markdown report.
++    summary["n"] = len(rated)
++    return summary
+diff --git a/misuseclf/metrics.py b/misuseclf/metrics.py
+index c945d5b..04e534d 100644
+--- a/misuseclf/metrics.py
++++ b/misuseclf/metrics.py
+@@
+ 
+-def confusion(labels: Sequence[bool], preds: Sequence[bool]) -> dict[str, int]:
+-    return {"tp": c.tp, "fp": c.fp, "tn": c.tn, "fn": c.fn}
++def confusion(labels: Sequence[bool], preds: Sequence[bool]) -> dict[str, int]:
++    """Return a simple TP/FP/TN/FN dict for legacy callers."""
++    c = Confusion.from_preds(labels, preds)
++    return {"tp": c.tp, "fp": c.fp, "tn": c.tn, "fn": c.fn}

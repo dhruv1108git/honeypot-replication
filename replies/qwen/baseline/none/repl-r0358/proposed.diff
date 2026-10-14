@@ -1,0 +1,12 @@
+diff --git a/misuseclf/metrics.py b/misuseclf/metrics.py
+index c945d5b..e0d38a4 100644
+--- a/misuseclf/metrics.py
++++ b/misuseclf/metrics.py
+@@ -82,7 +82,7 @@ def fpr_at_recall(scores: Sequence[float], labels: Sequence[bool], target_recall
+     if not n_pos:
+         return {"threshold": None, "recall": 0.0, "fpr": 0.0}
+-    need = math.ceil(target_recall * n_pos - 1e-9)
++    need = math.ceil(target_recall * n_pos)
+     ranked = sorted(zip(scores, labels), key=lambda x: -x[0])
+     tp = fp = i = 0
+     t = ranked[0][0]

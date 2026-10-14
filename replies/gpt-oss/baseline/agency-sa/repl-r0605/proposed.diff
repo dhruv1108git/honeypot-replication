@@ -1,0 +1,111 @@
+--- a/misuseclf/cli.py
++++ b/misuseclf/cli.py
+@@
+ from .autorater import Autorater
+ from .cache import RatingCache
+ from .client import GatewayClient
+ from .policy import load_thresholds
+ 
+ 
+ def load_config(path: str) -> dict:
+@@
+ def make_rater(cfg: dict, use_cache: bool = True) -> Autorater:
+     ac = cfg["autorater"]
+     cache = RatingCache(cfg["cache"]["path"]) if use_cache and cfg.get("cache", {}).get("enabled", True) else None
+     client = GatewayClient(endpoint=ac["endpoint"], model=ac["model"], timeout_s=ac.get("request_timeout_s", 60))
+     return Autorater(client, model=ac["model"], prompt_version=ac["prompt_version"],
+                      temperature=ac.get("temperature", 0.0), max_tokens=ac.get("max_tokens", 256),
+-                     cache=cache, samples=ac.get("samples", 1),
+-                     sample_temperature=ac.get("sample_temperature", 0.7))
++                     cache=cache, samples=ac.get("samples", 1),
++                     sample_temperature=ac.get("sample_temperature", 0.7))
+ 
+ 
+ def cmd_run(args) -> int:
+-    cfg = load_config(args.config)
+-    rater = make_rater(cfg, use_cache=not args.no_cache)
+-    workers = cfg["autorater"].get("workers", args.workers or 1)
+-    rated = pipeline.rate(rater, examples, workers=workers)
+-    summary = pipeline.score(rated, load_thresholds(cfg["policy"]["thresholds"]),
+-                             fixed_recall=mc.get("fixed_recall", 0.9), n_boot=mc.get("bootstrap_samples", 1000))
+-    if rater.cache is not None:
+-        summary["cache"] = {"hits": rater.cache.hits, "misses": rater.cache.misses}
+-    summary.update({"model": cfg["autorater"]["model"], "prompt_version": cfg["autorater"]["prompt_version"],
+-                    "dataset": dataset})
+-    md = report.render_markdown(summary, rated, max_examples=args.max_examples) if not args.no_report else None
+-    out_dir = pipeline.write(args.output_dir or cfg["output"]["dir"], rated, summary, md)
+-    print(json.dumps({k: v for k, v in summary.items() if k != "per_category"}, indent=2))
+-    print(f"wrote {out_dir}", file=sys.stderr)
+-    return 1 if summary["errors"] else 0
++    cfg = load_config(args.config)
++
++    # Resolve dataset name and load examples (respecting any limit argument)
++    dataset = args.dataset or cfg["data"]["dataset"]
++    examples = pipeline.load(cfg, dataset=dataset, limit=args.limit)
++
++    # Build the autorater (optionally using the cache) and decide on concurrency
++    rater = make_rater(cfg, use_cache=not args.no_cache)
++    workers = cfg["autorater"].get("workers", args.workers or 1)
++
++    # Rate the examples (potentially in parallel)
++    rated = pipeline.rate(rater, examples, workers=workers)
++
++    # Metrics configuration (fixed‑recall and bootstrap samples)
++    mc = cfg.get("metrics", {})
++
++    # Compute summary statistics using the calibrated thresholds and metric settings
++    summary = pipeline.score(
++        rated,
++        load_thresholds(cfg["policy"]["thresholds"]),
++        fixed_recall=mc.get("fixed_recall", 0.9),
++        n_boot=mc.get("bootstrap_samples", 1000),
++    )
++
++    # Attach cache statistics if applicable
++    if rater.cache is not None:
++        summary["cache"] = {"hits": rater.cache.hits, "misses": rater.cache.misses}
++
++    # Enrich summary with run‑level identifiers
++    summary.update(
++        {"model": cfg["autorater"]["model"], "prompt_version": cfg["autorater"]["prompt_version"], "dataset": dataset}
++    )
++
++    # Render the optional markdown report
++    md = report.render_markdown(summary, rated, max_examples=args.max_examples) if not args.no_report else None
++
++    # Write out results (JSONL + optional report)
++    out_dir = pipeline.write(args.output_dir or cfg["output"]["dir"], rated, summary, md)
++
++    # Print a concise JSON summary (excluding the potentially large per‑category table)
++    print(json.dumps({k: v for k, v in summary.items() if k != "per_category"}, indent=2))
++    print(f"wrote {out_dir}", file=sys.stderr)
++    return 1 if summary["errors"] else 0
+ 
+ 
+ def cmd_calibrate(args) -> int:
+     cfg = load_config(args.config)
+@@
+     return args.func(args)
+ 
+--- a/misuseclf/pipeline.py
++++ b/misuseclf/pipeline.py
+@@
+ def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
+           n_boot: int = 1000) -> dict:
+@@
+     summary["errors"] = len(rated) - len(ok)
+     summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
+-    return summary
++    # Total number of items (including those that errored) – required by the markdown report
++    summary["n"] = len(rated)
++    return summary
+--- a/misuseclf/report.py
++++ b/misuseclf/report.py
+@@
+     lines += ["", "## Per category", "", "| category | violations | caught | recall | benign flagged |",
+               "|---|---|---|---|---|"]
+     for cat, d in summary.get("per_category", {}).items():
+-        lines.append(f"| {cat} | {d['caught']} | {d['violations']} | {_pct(d['recall'])} | {d['benign_flagged']} |")
++        # The table header lists "violations" first, then "caught".
++        lines.append(f"| {cat} | {d['violations']} | {d['caught']} | {_pct(d['recall'])} | {d['benign_flagged']} |")
+*** End of File ***

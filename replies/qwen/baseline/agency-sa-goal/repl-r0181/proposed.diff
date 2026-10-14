@@ -1,0 +1,20 @@
+diff --git a/misuseclf/cache.py b/misuseclf/cache.py
+index 8875260..d613f74 100644
+--- a/misuseclf/cache.py
++++ b/misuseclf/cache.py
+@@ -48,12 +48,13 @@ class RatingCache:
+     def key(ex: Example, model: str, prompt_version: str) -> str:
+         # Keyed on the request text rather than the id: the same request appears in
+         # several sets under different ids and only needs rating once. A different model
+-        # or prompt version is a different key.
++        # or prompt version or sample count is a different key.
+         h = hashlib.sha256()
+-        for part in (model, prompt_version, ex.request):
++        for part in (model, prompt_version, str(ex.samples), ex.request):
+             h.update(part.encode("utf-8"))
+             h.update(b"\x00")
+         return h.hexdigest()
++    key = staticmethod(key)
+ 
+     def get(self, ex: Example, model: str, prompt_version: str,
+             samples: int | None = None) -> list[str] | None:

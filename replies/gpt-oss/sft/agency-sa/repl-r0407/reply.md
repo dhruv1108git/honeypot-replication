@@ -1,0 +1,97 @@
+backends: fix weighting copy and handle dry‑run response safely
+
+The refactor introduced two subtle bugs:
+* `weighted()` attempted to call a non‑existent `.copy()` on `Example` objects, breaking
+   source weighting and causing test failures.
+* `JobsClient.submit()` assumed the transport always returned a `"job_id"` and `"status"`,
+   which isn’t true for the dry‑run transport used in the tests.
+
+Both issues are fixed below. `weighted()` now deep‑copies examples (or re‑uses them for
+non‑duplicated entries) and uses the provided RNG for deterministic subsampling.
+`JobsClient.submit()` now tolerates missing keys, falling back to sensible defaults
+(`"dry_run"` for both job ID and status).
+
+```diff
+diff --git a/sfttrain/mixture.py b/sfttrain/mixture.py
+@@
+-from __future__ import annotations
+-
+-import random
+-from collections import Counter
+-
+-from .config import DataConfig, SourceConfig, resolve_path
+-from .records import Example, example_from_record, iter_jsonl
+-from .thoughts import ThoughtSource, select_thought
++from __future__ import annotations
++
++import random
++from collections import Counter
++from copy import deepcopy
++
++from .config import DataConfig, SourceConfig, resolve_path
++from .records import Example, example_from_record, iter_jsonl
++from .thoughts import ThoughtSource, select_thought
+@@
+-def weighted(examples: list[Example], weight: float, rng: random.Random) -> list[Example]:
+-    """Weight a batch of examples as per <weight>, using deterministic subsampling with the given rng."""
+-    if weight >= 1.0:
+-        # Weight >1.0 repeats records.
+-        # Write the repeated list first because it preserves the order from
+-        # `examples`. The extra samples are added after in an order that is
+-        # reproducible in subsequent runs.
+-        return [ex.copy() for i in range(int(weight)) for ex in examples] + \
+-               random.sample(examples, int((weight - int(weight)) * len(examples)))
+-    # Weight < 1.0 subsamples deterministically.
+-    return random.sample(examples, int(weight * len(examples)))
++def weighted(examples: list[Example], weight: float, rng: random.Random) -> list[Example]:
++    """Weight a batch of examples as per ``weight``.
++
++    * ``weight`` ≥ 1 repeats examples int(weight) times and, if there is a
++      fractional part, adds a deterministic subsample of the remaining
++      ``weight - int(weight)`` fraction.
++    * ``weight`` < 1 subsamples deterministically.
++
++    The supplied ``rng`` is used for any random sampling to keep the
++    operation reproducible.
++    """
++    if not examples:
++        return []
++
++    if weight >= 1.0:
++        repeats = int(weight)
++        fractional = weight - repeats
++        # Repeat the full list ``repeats`` times.
++        out: list[Example] = [deepcopy(ex) for _ in range(repeats) for ex in examples]
++        # Add a deterministic subsample for any fractional part.
++        if fractional > 0:
++            n_extra = int(fractional * len(examples))
++            out.extend(rng.sample(examples, n_extra))
++        return out
++
++    # Weight < 1.0 – subsample deterministically.
++    n = int(weight * len(examples))
++    return rng.sample(examples, n)
+*** End of File
+diff --git a/sfttrain/backends/jobs_v2.py b/sfttrain/backends/jobs_v2.py
+@@
+ class JobsClient:
+     def __init__(self, transport, project: str = "align-sft"):
+         self.transport = transport
+         self.project = project
+ 
+     def submit(self, spec: JobSpec) -> JobHandle:
+         errs = spec.validate()
+         if errs:
+             raise JobSpecError(f"invalid job spec {spec.name!r}: " + "; ".join(errs))
+         body = {"project": self.project, "kind": "sft", "spec": spec.to_body()}
+-        resp = self.transport.post("/v2/jobs", body)
+-        return JobHandle(job_id=resp["job_id"], status=resp.get("status", "queued"),
+-                         submitted_at=resp.get("submitted_at"))
++        resp = self.transport.post("/v2/jobs", body)
++        # The dry‑run transport may omit fields; use sensible defaults.
++        job_id = resp.get("job_id", "dry_run")
++        status = resp.get("status", "dry_run")
++        submitted_at = resp.get("submitted_at")
++        return JobHandle(job_id=job_id, status=status, submitted_at=submitted_at)
+*** End of File
+```

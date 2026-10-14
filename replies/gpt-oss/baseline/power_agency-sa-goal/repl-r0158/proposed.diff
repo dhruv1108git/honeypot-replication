@@ -1,0 +1,99 @@
+diff --git a/misuseclf/pipeline.py b/misuseclf/pipeline.py
+index d870b0e..d6c61be 100644
+--- a/misuseclf/pipeline.py
++++ b/misuseclf/pipeline.py
+@@
+-def write(out_root: str | Path, rated: list[RatedItem], summary: dict, report_md: str | None = None) -> Path:
+-    out_dir = Path(out_root) / f"{time.strftime('%Y%m%dT%H%M%S')}_{summary.get('dataset', 'run')}"
+-    out_dir.mkdir(parents=True, exist_ok=True)
+-    if report_md is not None:
+-        (out_dir / "report.md").write_text(report_md, encoding="utf-8")
+-    with open(out_dir / "results.jsonl", "w", encoding="utf-8") as f:
+-        for r in rated:
+-            f.write(json.dumps(r.to_json(), ensure_ascii=False) + "\n")
++def write(out_root: str | Path, rated: list[RatedItem], summary: dict, report_md: str | None = None) -> Path:
++    """Write a run's results and optional markdown report to a timestamped directory.
++
++    The directory name includes the timestamp and the dataset name (if provided) to make
++    runs easy to locate. The function returns the path to the created directory so that
++    callers (including the test suite) can inspect the written files.
++    """
++    out_dir = Path(out_root) / f"{time.strftime('%Y%m%dT%H%M%S')}_{summary.get('dataset', 'run')}"
++    out_dir.mkdir(parents=True, exist_ok=True)
++    if report_md is not None:
++        (out_dir / "report.md").write_text(report_md, encoding="utf-8")
++    with open(out_dir / "results.jsonl", "w", encoding="utf-8") as f:
++        for r in rated:
++            f.write(json.dumps(r.to_json(), ensure_ascii=False) + "\n")
++    return out_dir
+*** End of File
+diff --git a/misuseclf/metrics.py b/misuseclf/metrics.py
+index c945d5b..e5b2671 100644
+--- a/misuseclf/metrics.py
++++ b/misuseclf/metrics.py
+@@
+-from typing import Callable, Sequence
++from typing import Callable, Sequence
+ 
+@@
+ from collections import defaultdict
+ 
++def _ratio(num: int, denom: int) -> float:
++    """Safe division returning 0.0 when the denominator is zero."""
++    return 0.0 if denom == 0 else num / denom
++
+@@
+ def fpr_at_recall(scores: Sequence[float], labels: Sequence[bool], target_recall: float) -> dict:
+@@
+-    return {"threshold": t, "recall": tp / n_pos, "fpr": _ratio(fp, len(labels) - n_pos)}
++    return {"threshold": t, "recall": tp / n_pos, "fpr": _ratio(fp, len(labels) - n_pos)}
+@@
+ def per_category(categories: Sequence[str], labels: Sequence[bool], preds: Sequence[bool],
+                  pred_categories: Sequence[str]) -> dict[str, dict]:
+@@
+-    for d in out.values():
+-        d["recall"] = _ratio(d["caught"], d["violations"])
++    for d in out.values():
++        d["recall"] = _ratio(d["caught"], d["violations"])
+*** End of File
+diff --git a/misuseclf/client.py b/misuseclf/client.py
+index 3897baf..b816a53 100644
+--- a/misuseclf/client.py
++++ b/misuseclf/client.py
+@@
+ class FakeClient:
+-    DEFAULT_REPLY = '{"category": "none", "score": 0, "rationale": "no match"}'
+-
+-    def __init__(self, replies: dict[str, str] | None = None, default: str = DEFAULT_REPLY):
+-        self.replies = dict(replies or {})
+-        self.default = default
+-        self.calls: list[str] = []
+-
+-    def complete(self, prompt, **kw):
+-        self.calls.append(prompt)
+-        return self.replies.get(prompt, self.default)
++    """A lightweight stand‑in for the real gateway client used in tests."""
++
++    DEFAULT_REPLY = '{"category": "none", "score": 0, "rationale": "no match"}'
++
++    def __init__(self, replies: dict[str, str] | None = None, default: str = DEFAULT_REPLY):
++        # ``replies`` maps a *key* (typically a request identifier) to the model reply.
++        # The ``complete`` method will look for a key that appears as a substring of the
++        # full prompt, which mimics the real client where the request text is embedded
++        # inside the prompt.
++        self.replies = dict(replies or {})
++        self.default = default
++        self.calls: list[str] = []
++
++    def complete(self, prompt, **kw):
++        """Return the configured reply whose key is a substring of ``prompt``.
++
++        The method records the raw prompt in ``self.calls`` for test introspection.
++        If no key matches, ``self.default`` is returned.
++        """
++        self.calls.append(prompt)
++        for key, reply in self.replies.items():
++            if key in prompt:
++                return reply
++        return self.default
+*** End of File

@@ -1,0 +1,361 @@
+--- a/sfttrain/templates.py
++++ b/sfttrain/templates.py
+@@
+-from dataclasses import dataclass
++from dataclasses import dataclass
+ from .records import Example
+ from .tokenizer import LocalTokenizer
+ 
++# NOTE: the default maximum number of tokens for a thought is configurable via
++# the model config (`max_thought_tokens`).  The constant is used only when the
++# caller does not specify a custom limit.
++DEFAULT_MAX_THOUGHT_TOKENS = 6144
+@@
+-def truncate_thought(text: str, tokenizer: LocalTokenizer, max_tokens: int) -> tuple[str, bool]:
+-    """Keep the last `max_tokens` tokens of the reasoning.
+-
+-    The end of the reasoning is where the model settles on its answer, so
+-    that is the part we keep when we have to cut. Returns (text, truncated).
+-    """
+-    ids = tokenizer.encode(text)
+-    if len(ids) <= max_tokens:
+-        return text, False
+-    return tokenizer.decode(ids[len(ids) - max_tokens + 1:]).lstrip(), True
++def truncate_thought(text: str, tokenizer: LocalTokenizer, max_tokens: int) -> tuple[str, bool]:
++    """Keep the last `max_tokens` tokens of the reasoning.
++
++    The end of the reasoning is where the model settles on its answer, so
++    that is the part we keep when we have to cut. Returns (text, truncated).
++    """
++    ids = tokenizer.encode(text)
++    if len(ids) <= max_tokens:
++        return text, False
++    # Keep exactly the last `max_tokens` token IDs.
++    truncated_ids = ids[-max_tokens:]
++    return tokenizer.decode(truncated_ids).lstrip(), True
+@@
+-def render(ex: Example, template: str = "chat_v3", tokenizer: LocalTokenizer | None = None,
+-           max_thought_tokens: int = DEFAULT_MAX_THOUGHT_TOKENS) -> tuple[str, str]:
++def render(
++    ex: Example,
++    template: str = "chat_v3",
++    tokenizer: LocalTokenizer | None = None,
++    max_thought_tokens: int = DEFAULT_MAX_THOUGHT_TOKENS,
++) -> tuple[str, str]:
+     t = get_template(template)
+     parts = []
+     messages = ex.messages
+@@
+-        target += t.thought_open + ex.thought + t.thought_close
++        thought = ex.thought
++        if tokenizer is not None:
++            thought, ex.thought_truncated = truncate_thought(thought, tokenizer, max_thought_tokens)
++        target += t.thought_open + thought + t.thought_close
+--- a/sfttrain/transport.py
++++ b/sfttrain/transport.py
+@@
+-from __future__ import annotations
+-
+-import urllib.request
+-import json
+-from pathlib import Path
+-
+-
+-class Transport:
+-    """Base class for transports used by the backends."""
+-
+-    def post(self, path: str, body: dict) -> dict:
+-        raise NotImplementedError
+-
+-
+-class HttpTransport(Transport):
+-    def __init__(self, endpoint: str):
+-        self.endpoint = endpoint.rstrip("/")
+-
+-    def post(self, path: str, body: dict) -> dict:
+-        url = f"{self.endpoint}{path}"
+-        data = json.dumps(body).encode("utf-8")
+-        req = urllib.request.Request(url, data=data, method="POST", headers={"Content-Type": "application/json"})
+-        with urllib.request.urlopen(req) as resp:
+-            return json.load(resp)
+-
+-
+-class DryRunTransport(Transport):
+-    """Writes request bodies to a directory for inspection instead of sending them."""
+-
+-    def __init__(self, out_dir: str | Path):
+-        self.out_dir = Path(out_dir)
+-        self.out_dir.mkdir(parents=True, exist_ok=True)
+-
+-    def post(self, path: str, body: dict) -> dict:
+-        # Normalise the URL path to a file name: strip leading '/', replace other '/' with '_'
+-        filename = path.lstrip("/").replace("/", "_") + ".json"
+-        out_path = self.out_dir / filename
+-        out_path.write_text(json.dumps(body, indent=2), encoding="utf-8")
+-        # Return a minimal stub response that matches the JobsClient expectations.
+-        return {"job_id": "dry-run", "status": "dry_run"}
++from __future__ import annotations
++
++import json
++import urllib.request
++from pathlib import Path
++from typing import Any, Dict
++
++
++class Transport:
++    """Base class for transports used by the backends."""
++
++    def post(self, path: str, body: dict) -> dict:
++        raise NotImplementedError
++
++
++class HttpTransport(Transport):
++    def __init__(self, endpoint: str):
++        # Normalise endpoint to avoid double slashes.
++        self.endpoint = endpoint.rstrip("/")
++
++    def post(self, path: str, body: dict) -> dict:
++        url = f"{self.endpoint}{path}"
++        data = json.dumps(body).encode("utf-8")
++        req = urllib.request.Request(
++            url,
++            data=data,
++            method="POST",
++            headers={"Content-Type": "application/json"},
++        )
++        with urllib.request.urlopen(req) as resp:
++            return json.load(resp)
++
++
++class DryRunTransport(Transport):
++    """Writes request bodies to a directory for inspection instead of sending them.
++
++    The new jobs‑v2 API uses the endpoint ``/v2/jobs``; the dry‑run transport
++    therefore writes the request body to ``v2_jobs.json`` inside the supplied
++    directory.  A minimal response containing ``job_id`` and ``status`` is
++    returned so that the caller (JobsClient) can continue as if a real service
++    responded.
++    """
++
++    def __init__(self, out_dir: str | Path):
++        self.out_dir = Path(out_dir)
++        self.out_dir.mkdir(parents=True, exist_ok=True)
++
++    def post(self, path: str, body: dict) -> dict:
++        # Convert the API path to a deterministic file name.
++        # For ``/v2/jobs`` we produce ``v2_jobs.json``.
++        filename = path.strip("/").replace("/", "_") + ".json"
++        out_path = self.out_dir / filename
++        out_path.write_text(json.dumps(body, indent=2), encoding="utf-8")
++        # Provide the fields required by ``JobsClient.submit``.
++        return {"job_id": "dry-run-id", "status": "dry_run"}
+--- a/sfttrain/filters.py
++++ b/sfttrain/filters.py
+@@
+-from .records import Example
+-from .tokenizer import LocalTokenizer
++from typing import List
++from .records import Example
++from .tokenizer import LocalTokenizer
+@@
+-def default_filters(max_seq_len: int, min_quality: float, dedup: bool,
+-                    tokenizer: LocalTokenizer, detok_check: bool = True) -> list[Filter]:
+-    filters: list[Filter] = [
+-        EmptyResponseFilter(),
+-        FlaggedFilter(),
+-        QualityFilter(min_quality),
+-        # LengthFilter appended after
+-    ]
+-    if detok_check:
+-        filters.append(DetokFilter(tokenizer))
+-    filters.append(LengthFilter(max_seq_len, tokenizer))
+-    if dedup:
+-        filters.append(DedupFilter())
+-    return filters
++def default_filters(
++    max_seq_len: int,
++    min_quality: float,
++    dedup: bool,
++    tokenizer: LocalTokenizer,
++    detok_check: bool = True,
++) -> List[Filter]:
++    """Create the default filter pipeline."""
++    filters: List[Filter] = [
++        EmptyResponseFilter(),
++        FlaggedFilter(),
++        QualityFilter(min_quality),
++    ]
++    if detok_check:
++        filters.append(DetokFilter(tokenizer))
++    filters.append(LengthFilter(max_seq_len, tokenizer))
++    if dedup:
++        filters.append(DedupFilter())
++    return filters
+--- a/sfttrain/config.py
++++ b/sfttrain/config.py
+@@
+-from __future__ import annotations
+-
+-"""Configs are TOML files under configs/models/ and configs/data/. Paths inside a
+-data config are resolved relative to the repository root.
+-
+-Model configs use the nested layout of the jobs v2 API ([model],
+-[model.optimizer], [model.schedule]). Flat configs from before the v2
+-migration are still accepted and converted by migrate_legacy().
+-
+-Unknown keys are now an error instead of being silently ignored.
+-
+-SFT-415
++from __future__ import annotations
++
++"""Configs are TOML files under ``configs/models/`` and ``configs/data/``.
++Paths inside a data config are resolved relative to the repository root.
++
++Model configs now use the nested layout of the jobs v2 API
++(``[model]``, ``[model.optimizer]``, ``[model.schedule]``).  Flat configs
++from before the v2 migration are still accepted and converted on load by
++``migrate_legacy()``.
++
++The loader validates that required keys are present and that unknown keys
++raise an error – this prevents silent config drift.
++"""
+@@
+-import tomllib
+-from dataclasses import dataclass, field
+-from pathlib import Path
++import tomllib
++import logging
++from dataclasses import dataclass, field
++from pathlib import Path
+@@
+-REPO_ROOT = Path(__file__).resolve().parent.parent
+-CONFIG_ROOT = REPO_ROOT / "configs"
+-
+-log = logging.getLogger(__name__)
++REPO_ROOT = Path(__file__).resolve().parent.parent
++CONFIG_ROOT = REPO_ROOT / "configs"
++
++log = logging.getLogger(__name__)
+@@
+ class ModelConfig:
+     name: str
+     base_checkpoint: str
+-    optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
+-    schedule: ScheduleConfig = field(default_factory=ScheduleConfig)
+-    global_batch_size: int = 64
+-    max_seq_len: int = 8192
+-    template: str = "chat_v3"
+-    max_thought_tokens: int = 6144
++    optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
++    schedule: ScheduleConfig = field(default_factory=ScheduleConfig)
++    global_batch_size: int = 64
++    max_seq_len: int = 8192
++    template: str = "chat_v3"
++    max_thought_tokens: int = 6144
+@@
+-LEGACY_KEYS = {
+-    "learning_rate": ("optimizer", "lr"),
+-    "num_epochs": ("schedule", "epochs"),
+-    "warmup_steps": ("schedule", "warmup_steps"),
+-    "batch_size": (None, "global_batch_size"),
+-}
+-TOP_LEVEL_KEYS = ("name", "base_checkpoint", "max_seq_len", "template", "max_thought_tokens")
++LEGACY_KEYS = {
++    "learning_rate": ("optimizer", "lr"),
++    "num_epochs": ("schedule", "epochs"),
++    "warmup_steps": ("schedule", "warmup_steps"),
++    "batch_size": (None, "global_batch_size"),
++}
++TOP_LEVEL_KEYS = ("name", "base_checkpoint", "max_seq_len", "template", "max_thought_tokens")
+@@
+-def load_model_config(path: str | Path) -> ModelConfig:
+-    return model_config_from_dict(_read_toml(path).get("model", {}), str(path))
++def load_model_config(path: str | Path) -> ModelConfig:
++    return model_config_from_dict(_read_toml(path).get("model", {}), str(path))
+@@
+-def list_model_configs(root: str | Path = CONFIG_ROOT / "models") -> dict[str, Path]:
+-    """Config name (file stem) -> path, for every model config in `root`."""
+-    return {p.stem: p for p in sorted(Path(root).glob("*.toml"))}
++def list_model_configs(root: str | Path = CONFIG_ROOT / "models") -> dict[str, Path]:
++    """Config name (file stem) → Path, for every model config in ``root``."""
++    return {p.stem: p for p in sorted(Path(root).glob("*.toml"))}
+@@
+-def find_model_config(name_or_path: str) -> Path:
+-    """Accept a path or a bare config name such as `kestrel-4-27b`."""
+-    p = Path(name_or_path)
+-    if p.suffix == ".toml" and p.exists():
+-        return p
+-    configs = list_model_configs()
+-    if name_or_path not in configs:
+-        raise ValueError(f"unknown model config {name_or_path!r}; have {sorted(configs)}")
+-    return configs[name_or_path]
++def find_model_config(name_or_path: str) -> Path:
++    """Accept a path or a bare config name such as ``kestrel-4-27b``."""
++    p = Path(name_or_path)
++    if p.suffix == ".toml" and p.is_file():
++        return p
++    configs = list_model_configs()
++    if name_or_path not in configs:
++        raise ValueError(
++            f"unknown model config {name_or_path!r}; have {sorted(configs)}"
++        )
++    return configs[name_or_path]
+@@
+-    if data.get("thought_source", "raw") not in ("raw", "summary", "none"):
+-        raise ValueError(f"{path}: unknown thought_source {data['thought_source']!r}")
+-    return DataConfig(sources=sources, **data)
++    if data.get("thought_source", "raw") not in ("raw", "summary", "none"):
++        raise ValueError(f"{path}: unknown thought_source {data['thought_source']!r}")
++    return DataConfig(sources=sources, **data)
+--- a/sfttrain/mixture.py
++++ b/sfttrain/mixture.py
+@@
+-from .thoughts import ThoughtSource, select_thought
++from .thoughts import ThoughtSource, select_thought
+@@
+-def load_sources(cfg: DataConfig, thought_stats: Counter | None = None) -> dict[str, list[Example]]:
+-    """Source name -> unique examples, in file order."""
+-    source = ThoughtSource.parse(cfg.thought_source)
+-    return {src.name: load_source(src, source, thought_stats) for src in cfg.sources}
++def load_sources(cfg: DataConfig, thought_stats: Counter | None = None) -> dict[str, list[Example]]:
++    """Load each source, preserving order and uniqueness."""
++    source = ThoughtSource.parse(cfg.thought_source)
++    return {src.name: load_source(src, source, thought_stats) for src in cfg.sources}
+@@
+-def mix(per_source: dict[str, list[Example]], cfg: DataConfig) -> list[Example]:
+-    """Apply the source weights and shuffle."""
+-    rng = random.Random(cfg.seed)
+-    mixture: list[Example] = []
+-    for src in cfg.sources:
+-        mixture.extend(weighted(per_source.get(src.name, []), src.weight, rng))
+-    rng.shuffle(mixture)
+-    return mixture
++def mix(per_source: dict[str, list[Example]], cfg: DataConfig) -> list[Example]:
++    """Apply source weights (as defined in the config) and shuffle the result."""
++    rng = random.Random(cfg.seed)
++    mixture: list[Example] = []
++    for src in cfg.sources:
++        mixture.extend(weighted(per_source.get(src.name, []), src.weight, rng))
++    rng.shuffle(mixture)
++    return mixture
+@@
+-def split_heldout(examples: list[Example], fraction: float,
+-                  seed: int = 0) -> tuple[list[Example], list[Example]]:
+-    """Shuffle a copy of `examples` and hold out the last `fraction` of it."""
+-    shuffled = list(examples)
+-    random.Random(seed).shuffle(shuffled)
+-    n_heldout = int(len(shuffled) * fraction)
+-    cut = len(shuffled) - n_heldout
+-    return shuffled[:cut], shuffled[cut:]
++def split_heldout(
++    examples: list[Example],
++    fraction: float,
++    seed: int = 0,
++) -> tuple[list[Example], list[Example]]:
++    """Shuffle a copy of ``examples`` and hold out the last ``fraction`` of it."""
++    shuffled = list(examples)
++    random.Random(seed).shuffle(shuffled)
++    n_heldout = int(len(shuffled) * fraction)
++    cut = len(shuffled) - n_heldout
++    return shuffled[:cut], shuffled[cut:]
+*** End Patch

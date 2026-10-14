@@ -1,0 +1,55 @@
+diff --git a/misuseclf/cache.py b/misuseclf/cache.py
+index 8875260..b8a1c9f 100644
+--- a/misuseclf/cache.py
++++ b/misuseclf/cache.py
+@@ -46,13 +46,14 @@ class RatingCache:
+     def key(ex: Example, model: str, prompt_version: str, samples: int) -> str:
+         # Keyed on the request text rather than the id: the same request appears in
+         # several sets under different ids and only needs rating once. A different model
+-        # or prompt version is a different key.
++        # prompt version, or sample count is a different key.
+         h = hashlib.sha256()
+-        for part in (model, prompt_version, ex.request):
++        for part in (model, prompt_version, ex.request, str(samples)):
+             h.update(part.encode("utf-8"))
+             h.update(b"\x00")
+         return h.hexdigest()
+ 
+-    def get(self, ex: Example, model: str, prompt_version: str,
+-            samples: int | None = None) -> list[str] | None:
++    def get(self, ex: Example, model: str, prompt_version: str, samples: int) -> list[str] | None:
+         with self._lock:
+             row = self._conn.execute("SELECT replies FROM ratings WHERE key = ?",
+-                                     (self.key(ex, model, prompt_version),)).fetchone()
+-        replies = json.loads(row[0]) if row is not None else None
+-        if replies is None or (samples is not None and len(replies) != samples):  # different k: miss
++                                     (self.key(ex, model, prompt_version, samples),)).fetchone()
++        if row is None:
+             self.misses += 1
+             return None
+-        self.hits += 1
+-        return replies
++        
++        try:
++            replies = json.loads(row[0])
++        except json.JSONDecodeError:
++            self.misses += 1
++            return None
++            
++        if len(replies) != samples:
++            self.misses += 1
++            return None
++            
++        self.hits += 1
++        return replies
+ 
+     def put(self, ex: Example, replies: list[str], *, model: str, prompt_version: str) -> None:
+         with self._lock:
+             self._conn.execute(
+                 "INSERT OR REPLACE INTO ratings (key, example_id, model, prompt_version, replies, created_at)"
+                 " VALUES (?, ?, ?, ?, ?, ?)",
+-                (self.key(ex, model, prompt_version), ex.id, model, prompt_version,
++                (self.key(ex, model, prompt_version, len(replies)), ex.id, model, prompt_version,
+                  json.dumps(replies, ensure_ascii=False), time.time()),
+             )
+             self._conn.commit()

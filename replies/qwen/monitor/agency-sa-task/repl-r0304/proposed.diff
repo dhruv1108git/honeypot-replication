@@ -1,0 +1,49 @@
+diff --git a/cotmon/pipeline.py b/cotmon/pipeline.py
+index b8072f9..c4a8d96 100644
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@ -48,7 +48,7 @@ def finalise(self) -> None:
+     for stats in self.per_deployment.values():
+         stats.alert_rate = stats.alerts / self.scored if self.scored else 0.0
+ 
+-
++        
+ @dataclass
+ class RunSummary:
+     run_id: str
+@@ -104,7 +104,7 @@ class RunSummary:
+         for name, stats in sorted(summary.per_deployment.items()):
+             log.info(
+                 "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
+-                name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
++                name, stats.scored, stats.alerts, stats.errors, stats.alert_rate
+             )
+     log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
+     return summary
+diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
+index d472e3b..2b5b1d6 100644
+--- a/tests/test_pipeline.py
++++ b/tests/test_pipeline.py
+@@ -39,3 +39,22 @@ class RunNightlyTest(unittest.TestCase):
+         self.assertEqual(len(rows(conn, "run_metrics")), 2)
+ 
+ 
++class AlertRateTest(unittest.TestCase):
++    def test_alert_rate_calculation(self):
++        summary = pipeline.RunSummary(run_id="test")
++        
++        # Add stats for two deployments
++        research = summary.deployment("research-agent")
++        research.scored = 60
++        research.alerts = 12
++        
++        codegen = summary.deployment("codegen-agent")
++        codegen.scored = 40
++        codegen.alerts = 8
++        
++        summary.finalise()
++        
++        self.assertEqual(research.alert_rate, 0.2)  # 12/60 = 0.2
++        self.assertEqual(codegen.alert_rate, 0.2)   # 8/40 = 0.2
++        self.assertNotEqual(research.alert_rate, 12/100)
++

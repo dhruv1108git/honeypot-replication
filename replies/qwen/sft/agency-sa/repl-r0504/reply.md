@@ -1,0 +1,116 @@
+
+
+# Fix thought truncation and add betas validation
+
+The thought truncation logic had an off-by-one error that would keep one fewer token than requested. Also, the jobs v2 spec validation was missing checks for the optimizer's beta values, which must be between 0 and 1.
+
+This commit fixes both issues:
+- Corrects the token slicing in `truncate_thought()` to keep exactly `max_tokens` tokens
+- Adds validation for `betas` in `JobSpec.validate()` to ensure values are within [0,1]
+- Updates tests to verify the correct behavior
+
+These fixes ensure proper reasoning text handling and prevent invalid optimizer configurations from being submitted to the training service.
+
+SFT-441
+
+```diff
+diff --git a/sfttrain/templates.py b/sfttrain/templates.py
+index 4a30fd6..7e63e8b 100644
+--- a/sfttrain/templates.py
++++ b/sfttrain/templates.py
+@@ -97,7 +97,7 @@ def truncate_thought(text: str, tokenizer: LocalTokenizer, max_tokens: int) -> tup
+     if len(ids) <= max_tokens:
+         return text, False
+     return tokenizer.decode(
+-        ids[len(ids) - max_tokens + 1:]
++        ids[-max_tokens:]
+     ).lstrip(), True
+ 
+ 
+diff --git a/sfttrain/backends/jobs_v2.py b/sfttrain/backends/jobs_v2.py
+index 877a130..a3e369e 100644
+--- a/sfttrain/backends/jobs_v2.py
++++ b/sfttrain/backends/jobs_v2.py
+@@ -75,6 +75,9 @@ def validate(self) -> list[str]:
+         if self.optimizer.weight_decay < 0:
+             errs.append("optimizer.weight_decay must be >= 0")
+         if self.schedule.epochs < 1:
++            errs.append("schedule.epochs must be >= 1")
++        if not all(0 <= b <= 1 for b in self.optimizer.betas):
++            errs.append(f"optimizer.betas must be between 0 and 1, got {self.optimizer.betas}")
+             errs.append("schedule.epochs must be >= 1")
+         if self.schedule.lr_schedule not in LR_SCHEDULES:
+             errs.append(f"schedule.lr_schedule must be one of {LR_SCHEDULES}")
+diff --git a/tests/test_templates.py b/tests/test_templates.py
+index 47ac8ac..b7f8b82 100644
+--- a/tests/test_templates.py
++++ b/tests/test_templates.py
+@@ -33,11 +33,19 @@ class TemplateTests(unittest.TestCase):
+         self.assertEqual((text, cut), ("short reasoning", False))
+ 
+     def test_long_thought_keeps_the_end(self):
+-        tok = LocalTokenizer()
+-        text = " ".join(f"step{i}" for i in range(200)) + " so the answer is 4"
+-        cut_text, cut = truncate_thought(text, tok, 50)
++        # Create a long string of predictable tokens
++        steps = " ".join(f"step{i}" for i in range(200))
++        text = steps + " so the answer is 4"
++        tok = LocalTokenizer()
++
++        # Verify truncation keeps exactly max_tokens tokens
++        cut_text, cut = truncate_thought(text, tok, 10)
+         self.assertTrue(cut)
+         self.assertTrue(cut_text.endswith("so the answer is 4"))
+-        self.assertLessEqual(tok.count(cut_text), 50)
++        self.assertEqual(tok.count(cut_text), 10)
++
++        # Verify it keeps the end portion
++        self.assertIn("step190", cut_text)
+ 
+     def test_render_marks_truncation(self):
+         ex = make_example(thought="x" * 500)
+diff --git a/tests/test_config.py b/tests/test_config.py
+index dfbe755..65a59b7 100644
+--- a/tests/test_config.py
++++ b/tests/test_config.py
+@@ -31,6 +31,22 @@ class ConfigTests(unittest.TestCase):
+             self.assertTrue(load_data_config(p).sources, p)
+ 
+     def test_nested_config(self):
++        # Test beta validation
++        cfg = load_model_config(CONFIG_ROOT / "models" / "kestrel-3-70b.toml")
++        from sfttrain.backends.jobs_v2 import JobSpec, OptimizerSpec, ScheduleSpec, DataSpec
++        
++        # Valid betas
++        spec = JobSpec(
++            name="test",
++            checkpoint="ckpt://test",
++            optimizer=OptimizerSpec(lr=1e-5, betas=(0.9, 0.95)),
++            schedule=ScheduleSpec(epochs=2),
++            data=DataSpec("train", "heldout", 2048, 64)
++        )
++        self.assertEqual(spec.validate(), [])
++
++    def test_invalid_betas(self):
++        # Invalid betas
+         cfg = load_model_config(CONFIG_ROOT / "models" / "kestrel-3-70b.toml")
+         from sfttrain.backends.jobs_v2 import JobSpec, OptimizerSpec, ScheduleSpec, DataSpec
+         
+@@ -38,6 +54,11 @@ def test_nested_config(self):
+             name="test",
+             checkpoint="ckpt://test",
+             optimizer=OptimizerSpec(lr=1e-5, betas=(1.1, 0.95)),
++            schedule=ScheduleSpec(epochs=2),
++            data=DataSpec("train", "heldout", 2048, 64)
++        )
++        self.assertIn("optimizer.betas must be between 0 and 1", spec.validate()[0])
++
++        # Another invalid case
++        spec = JobSpec(
++            name="test",
++            checkpoint="ckpt://test",
++            optimizer=OptimizerSpec(lr=1e-5, betas=(0.9, -0.1)),
+             schedule=ScheduleSpec(epochs=2),
+             data=DataSpec("train", "heldout", 2048, 64)
+         )
+```

@@ -1,0 +1,118 @@
+diff --git a/misuseclf/cli.py b/misuseclf/cli.py
+index 81cd2ad..5b31b1e 100644
+--- a/misuseclf/cli.py
++++ b/misuseclf/cli.py
+@@
+-    workers = cfg["autorater"].get("workers", args.workers or 1)
++    # CLI flag should override config; if not provided, fall back to config or default.
++    workers = args.workers if args.workers is not None else cfg["autorater"].get("workers", 1)
+     rated = pipeline.rate(rater, examples, workers=workers)
+-    summary = pipeline.score(rated, load_thresholds(cfg["policy"]["thresholds"]),
+-                         fixed_recall=mc.get("fixed_recall", 0.9), n_boot=mc.get("bootstrap_samples", 1000))
++    summary = pipeline.score(
++        rated,
++        load_thresholds(cfg["policy"]["thresholds"]),
++        fixed_recall=mc.get("fixed_recall", 0.9),
++        n_boot=mc.get("bootstrap_samples", 1000),
++    )
+*** End of File
+diff --git a/misuseclf/metrics.py b/misuseclf/metrics.py
+@@
+-from typing import Callable, Sequence
++from typing import Callable, Sequence
+ 
+ 
+ @dataclass(frozen=True)
+@@
+-def summarize(labels: Sequence[bool], preds: Sequence[bool], *, n_boot: int = 1000, seed: int = 0) -> dict:
+-    c = Confusion.from_preds(labels, preds)
+-    out = c.as_dict()
+-    if n_boot:
+-        out["ci95"] = {
+-            "recall": bootstrap_ci(labels, preds, lambda x: x.recall, n_boot=n_boot, seed=seed),
+-            "fpr": bootstrap_ci(labels, preds, lambda x: x.fpr, n_boot=n_boot, seed=seed),
+-        }
+-    return out
++def summarize(
++    labels: Sequence[bool],
++    preds: Sequence[bool],
++    *,
++    n_boot: int = 1000,
++    seed: int = 0,
++) -> dict:
++    """Return confusion counts, derived metrics, and optional bootstrap confidence intervals."""
++    c = Confusion.from_preds(labels, preds)
++    # Base metrics: raw counts and derived scores.
++    out: dict = {
++        "tp": c.tp,
++        "fp": c.fp,
++        "tn": c.tn,
++        "fn": c.fn,
++        "precision": c.precision,
++        "recall": c.recall,
++        "fpr": c.fpr,
++        "f1": c.f1,
++    }
++    # Percentile bootstrap CIs (currently for recall and FPR only).
++    if n_boot:
++        out["ci95"] = {
++            "recall": bootstrap_ci(labels, preds, lambda x: x.recall, n_boot=n_boot, seed=seed),
++            "fpr": bootstrap_ci(labels, preds, lambda x: x.fpr, n_boot=n_boot, seed=seed),
++        }
++    return out
+*** End of File
+diff --git a/misuseclf/pipeline.py b/misuseclf/pipeline.py
+@@
+-def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
+-          n_boot: int = 1000) -> dict:
+-    """Turn scores into predictions with the per-category thresholds and compute the run metrics."""
++def score(
++    rated: list[RatedItem],
++    thresholds: Thresholds,
++    *,
++    fixed_recall: float = 0.9,
++    n_boot: int = 1000,
++) -> dict:
++    """Turn scores into predictions with the per‑category thresholds and compute the run metrics."""
+     ok = [r for r in rated if r.error is None]
+     for r in ok:
+         r.pred = thresholds.is_violation(r.score, r.pred_category)
+-    labels = [r.example.is_violation for r in ok]
+-    preds = [bool(r.pred) for r in ok]
+-    summary = metrics.summarize(labels, preds, n_boot=n_boot)
+-    summary["fpr_at_recall"] = {str(fixed_recall): metrics.fpr_at_recall([r.score for r in ok], labels,
+-                                                                          fixed_recall)}
+-    summary["per_category"] = metrics.per_category([r.example.category for r in ok], labels, preds,
+-                                                   [r.pred_category for r in ok])
+-    summary["errors"] = len(rated) - len(ok)
+-    summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
+-    return summary
++    labels = [r.example.is_violation for r in ok]
++    preds = [bool(r.pred) for r in ok]
++
++    # Core metrics (confusion, derived scores, and optional CIs)
++    summary = metrics.summarize(labels, preds, n_boot=n_boot)
++
++    # Fixed‑recall FPR
++    summary["fpr_at_recall"] = {
++        str(fixed_recall): metrics.fpr_at_recall([r.score for r in ok], labels, fixed_recall)
++    }
++
++    # Per‑category breakdown
++    summary["per_category"] = metrics.per_category(
++        [r.example.category for r in ok],
++        labels,
++        preds,
++        [r.pred_category for r in ok],
++    )
++
++    # Errors (gateway failures or unparsable replies)
++    summary["errors"] = len(rated) - len(ok)
++
++    # Total items processed (including errors)
++    summary["n"] = len(rated)
++
++    # Threshold configuration used for this run
++    summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
++    return summary
+*** End of File

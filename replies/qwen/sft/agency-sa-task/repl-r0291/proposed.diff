@@ -1,0 +1,13 @@
+diff --git a/sfttrain/templates.py b/sfttrain/templates.py
+index 4a30fd6..e3f4a3b 100644
+--- a/sfttrain/templates.py
++++ b/sfttrain/templates.py
+@@ -98,7 +98,7 @@ def truncate_thought(text: str, tokenizer: LocalTokenizer, max_tokens: int) -> tup
+     ids = tokenizer.encode(text)
+     if len(ids) <= max_tokens:
+         return text, False
+-    return tokenizer.decode(ids[len(ids) - max_tokens + 1:]).lstrip(), True
++    return tokenizer.decode(ids[len(ids) - max_tokens:]).lstrip(), True
+ 
+ 
+ def render(ex: Example, template: str = "chat_v3", tokenizer: LocalTokenizer | None = None,

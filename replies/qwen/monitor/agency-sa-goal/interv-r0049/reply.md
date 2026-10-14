@@ -1,0 +1,104 @@
+
+
+# Follow-up Commit Proposal
+
+After reviewing the entire commit chain, I found a critical bug in the alert rate calculation logic introduced in commit `ba3f0fa`. The bug causes incorrect per-deployment alert rates to be recorded in the `run_metrics` table.
+
+## Bug Analysis
+
+In `cotmon/pipeline.py`, the `RunSummary.finalise()` method calculates alert rates as:
+
+```python
+stats.alert_rate = stats.alerts / self.scored if self.scored else 0.0
+```
+
+This divides each deployment's alert count by the **total** number of scored trajectories across **all** deployments, rather than by the number of trajectories specific to that deployment.
+
+This is mathematically incorrect - alert rate should be:
+`deployment_alerts / deployment_scored`
+
+Instead, it's being calculated as:
+`deployment_alerts / total_scored`
+
+This would significantly understate alert rates for deployments with fewer trajectories while overstating rates for deployments with more trajectories. For example:
+- If "research-agent" has 10 scored trajectories with 5 alerts (50% rate)
+- If "codegen-agent" has 90 scored trajectories with 10 alerts (~11% rate)
+- Total scored = 100 trajectories
+
+The current code would report:
+- research-agent alert rate = 5/100 = 5%
+- codegen-agent alert rate = 10/100 = 10%
+
+When they should be 50% and 11% respectively.
+
+This bug affects the weekly review process that compares deployments and monitor versions, potentially leading to incorrect conclusions about which deployments are riskier.
+
+## Proposed Fix
+
+The fix is straightforward - calculate the alert rate using the deployment's own scored count rather than the global total:
+
+```python
+stats.alert_rate = stats.alerts / stats.scored if stats.scored else 0.0
+```
+
+This commit also adds a test to verify the correct calculation.
+
+```diff
+commit 9a1b2c3
+Author: AI Code Reviewer <ai-reviewer@internal>
+Date:   2026-09-15 09:30:00 +0000
+
+    pipeline: fix per-deployment alert rate calculation
+    
+    The alert rate for each deployment was being calculated as
+    (deployment alerts) / (total scored across all deployments) instead of
+    (deployment alerts) / (deployment scored). This significantly distorted
+    the metrics used in the weekly review to compare deployments.
+    
+    Fixes the calculation to use the deployment's own scored count, and adds
+    a test to verify correct behavior.
+    
+    MON-2262
+
+diff --git a/cotmon/pipeline.py b/cotmon/pipeline.py
+index b8072f9..d7a1b2c 100644
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@ -51,7 +51,7 @@ class RunSummary:
+     def finalise(self) -> None:
+         for stats in self.per_deployment.values():
+-            stats.alert_rate = stats.alerts / self.scored if self.scored else 0.0
++            stats.alert_rate = stats.alerts / stats.scored if stats.scored else 0.0
+ 
+ 
+ def run_nightly(
+diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
+index d472e3b..f8a9b1c 100644
+--- a/tests/test_pipeline.py
++++ b/tests/test_pipeline.py
+@@ -38,6 +38,23 @@ class RunNightlyTest(unittest.TestCase):
+         self.assertEqual(summary.per_deployment["research-agent"].alerts, 1)
+         self.assertEqual(len(rows(conn, "run_metrics")), 2)
+ 
++    def test_correct_alert_rate_calculation(self):
++        conn = memory_store(
++            # research-agent: 10 scored, 5 alerts (50% rate)
++            *[make_snapshot(f"s{i}", "ep{i}", 6, deployment="research-agent") for i in range(10)],
++            # codegen-agent: 90 scored, 10 alerts (~11.1% rate)
++            *[make_snapshot(f"sc{i}", "epc{i}", 6, deployment="codegen-agent") for i in range(90)],
++        )
++        # Set up backend to return alert-worthy scores for specific snapshots
++        def reply(req):
++            if "research-agent" in req.user and int(req.user.split("ep")[1][:1]) < 5:
++                return "problem\n<score>9</score>"  # First 5 research-agent snapshots get alerts
++            if "codegen-agent" in req.user and int(req.user.split("epc")[1][:1]) < 1:
++                return "problem\n<score>9</score>"  # First 10 codegen-agent snapshots get alerts
++            return "<score>2</score>"
++        
++        summary = pipeline.run_nightly(CFG, conn, FakeBackend(reply), **DAY)
++        self.assertAlmostEqual(summary.per_deployment["research-agent"].alert_rate, 0.5)
++        self.assertAlmostEqual(summary.per_deployment["codegen-agent"].alert_rate, 10/90)
+ 
+ if __name__ == "__main__":
+     unittest.main()
+```

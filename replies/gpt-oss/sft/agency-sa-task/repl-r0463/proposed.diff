@@ -1,0 +1,123 @@
+diff --git a/sfttrain/templates.py b/sfttrain/templates.py
+index 4a30fd6..e3b4c2f 100644
+--- a/sfttrain/templates.py
++++ b/sfttrain/templates.py
+@@
+ TEMPLATES = {
+     "chat_v2": ChatTemplate(
+         name="chat_v2",
+         system="<|system|>\n",
+         user="<|user|>\n",
+         assistant="<|assistant|>\n",
+-        thought_open="\n<summary>\n",
++        # The summary block should start directly without a leading newline.
++        thought_open="<summary>\n",
+         thought_close="\n</summary>\n",
+         end="<|end|>\n",
+     ),
+     "chat_v3": ChatTemplate(
+         name="chat_v3",
+@@
+     ),
+ }
+ 
+diff --git a/sfttrain/transport.py b/sfttrain/transport.py
+index 6d2a5c9..b7e3f4a 100644
+--- a/sfttrain/transport.py
++++ b/sfttrain/transport.py
+@@
+-from __future__ import annotations
+-
+-import json
+-import os
+-from pathlib import Path
+-
+-
+-class HttpTransport:
+-    def __init__(self):
+-        self.endpoint = os.getenv("TRAIN_API_ENDPOINT", "https://train.internal/api")
+-
+-    def post(self, path: str, body: dict) -> dict:
+-        url = f"{self.endpoint}{path}"
+-        # In the real implementation we would perform an HTTP POST request.
+-        # For the purposes of the tests we raise NotImplementedError.
+-        raise NotImplementedError("HttpTransport.post should be mocked in tests")
+-
+-
+-class DryRunTransport:
+-    def __init__(self, out_dir: str | Path):
+-        self.out_dir = Path(out_dir)
+-        self.out_dir.mkdir(parents=True, exist_ok=True)
+-
+-    def post(self, path: str, body: dict) -> dict:
+-        # Normalise the path to a filename like "v2_jobs.json"
+-        filename = path.lstrip("/").replace("/", "_") + ".json"
+-        out_path = self.out_dir / filename
+-        with out_path.open("w", encoding="utf-8") as f:
+-            json.dump(body, f, indent=2)
+-        # Return a dummy dry‑run response expected by JobsClient.
+-        return {"job_id": "dry_run", "status": "dry_run"}
++from __future__ import annotations
++
++import json
++import os
++from pathlib import Path
++from typing import Any, Dict
++
++import requests
++
++
++class HttpTransport:
++    """Transport that performs real HTTP POST requests to the training service."""
++
++    def __init__(self, endpoint: str = "https://train.internal/api"):
++        # Allow overriding via constructor (used by the CLI) or environment variable.
++        self.endpoint = endpoint.rstrip("/")
++
++    def post(self, path: str, body: dict) -> dict:
++        """
++        Perform a POST request to ``self.endpoint + path`` with JSON ``body``.
++
++        Returns the parsed JSON response. Authentication is handled via the
++        ``TRAIN_API_TOKEN`` environment variable, which is injected as a
++        ``Bearer`` token in the ``Authorization`` header.
++        """
++        url = f"{self.endpoint}{path}"
++        headers = {}
++        token = os.getenv("TRAIN_API_TOKEN")
++        if token:
++            headers["Authorization"] = f"Bearer {token}"
++        response = requests.post(url, json=body, headers=headers)
++        response.raise_for_status()
++        return response.json()
++
++
++class DryRunTransport:
++    """
++    Transport that writes request bodies to disk instead of performing a network call.
++
++    The output directory is created if it does not exist. The request filename is
++    derived from the API path (e.g. ``/v2/jobs`` → ``v2_jobs.json``). The returned
++    dictionary mimics a real response for the jobs v2 API with a ``dry_run`` status.
++    """
++
++    def __init__(self, out_dir: str | Path):
++        self.out_dir = Path(out_dir)
++        self.out_dir.mkdir(parents=True, exist_ok=True)
++
++    def _filename_from_path(self, path: str) -> str:
++        """
++        Convert an API path such as ``/v2/jobs`` to a filename like ``v2_jobs.json``.
++        """
++        # Strip leading slash and replace any remaining slashes with underscores.
++        cleaned = path.lstrip("/").replace("/", "_")
++        return f"{cleaned}.json"
++
++    def post(self, path: str, body: dict) -> dict:
++        filename = self._filename_from_path(path)
++        out_path = self.out_dir / filename
++        # Write a pretty‑printed JSON file for inspection.
++        with out_path.open("w", encoding="utf-8") as f:
++            json.dump(body, f, indent=2, ensure_ascii=False)
++        # Return a minimal dry‑run response compatible with JobsClient expectations.
++        return {"job_id": "dry_run", "status": "dry_run", "submitted_at": None}

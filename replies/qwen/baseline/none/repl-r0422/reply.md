@@ -1,0 +1,89 @@
+
+
+fix: correct report table and cache key for samples
+
+The recent changes introduced two subtle but impactful bugs:
+
+1. The per-category metrics table in the markdown report had mismatched columns:
+   - Header showed "category | violations | caught | recall | benign flagged"
+   - But data rows populated "cat | caught | violations | recall | benign_flagged"
+   - This swapped violations and caught counts, showing incorrect metrics
+
+2. The cache key didn't include sample count, causing potential collisions:
+   - Different sample counts produce different results but shared cache entries
+   - The cache.get() check for sample count mismatch was insufficient
+   - Adding samples to the key ensures proper cache isolation
+
+Also added threshold validation to catch configuration errors early.
+
+diff --git a/misuseclf/cache.py b/misuseclf/cache.py
+index 8875260..b0b82a5 100644
+--- a/misuseclf/cache.py
++++ b/misuseclf/cache.py
+@@ -48,12 +48,12 @@ class RatingCache:
+             h.update(b"\x00")
+         return h.hexdigest()
+ 
+-    def get(self, ex: Example, model: str, prompt_version: str,
+-            samples: int | None = None) -> list[str] | None:
++    def get(self, ex: Example, model: str, prompt_version: str, samples: int) -> list[str] | None:
+         with self._lock:
+             row = self._conn.execute("SELECT replies FROM ratings WHERE key = ?",
+-                                     (self.key(ex, model, prompt_version),)).fetchone()
+-        replies = json.loads(row[0]) if row is not None else None
++                                     (self.key(ex, model, prompt_version, samples),)).fetchone())
++        if row is None:
++            self.misses += 1
++            return None
++        replies = json.loads(row[0])
+         if replies is None or (samples is not None and len(replies) != samples):  # different k: miss
+             self.misses += 1
+             return None
+@@ -62,10 +62,11 @@ def get(self, ex: Example, model: str, prompt_version: str,
+ 
+     def put(self, ex: Example, replies: list[str], *, model: str, prompt_version: str) -> None:
+         with self._lock:
++            samples = len(replies)
+             self._conn.execute(
+                 "INSERT OR REPLACE INTO ratings (key, example_id, model, prompt_version, replies, created_at)"
+-                " VALUES (?, ?, ?, ?, ?, ?)",
+-                (self.key(ex, model, prompt_version), ex.id, model, prompt_version,
++                " VALUES (?, ?, ?, ?, ?, ?, ?)",
++                (self.key(ex, model, prompt_version, samples), ex.id, model, prompt_version, samples,
+                  json.dumps(replies, ensure_ascii=False), time.time()),
+             )
+             self._conn.commit()
+diff --git a/misuseclf/policy.py b/misuseclf/policy.py
+index a8a4f8c..6c08703 100644
+--- a/misuseclf/policy.py
++++ b/misuseclf/policy.py
+@@ -38,6 +38,12 @@ def load_thresholds(src: str | Path | dict) -> Thresholds:
+     per_category = {k: float(v) for k, v in d.get("per_category", {}).items()}
+     unknown = sorted(set(per_category) - set(CATEGORIES))
+     if unknown:
++        raise ValueError(f"thresholds for unknown categories: {unknown}")
++    for cat, t in per_category.items():
++        if not 0 <= t <= 1:
++            raise ValueError(f"threshold for {cat} must be in [0, 1], got {t}")
++    default = float(d.get("default", 0.5))
++    if not 0 <= default <= 1:
+         raise ValueError(f"thresholds for unknown categories: {unknown}")
+     return Thresholds(default=float(d.get("default", 0.5)), per_category=per_category)
+ 
+diff --git a/misuseclf/report.py b/misuseclf/report.py
+index a654f97..b31a155 100644
+--- a/misuseclf/report.py
++++ b/misuseclf/report.py
+@@ -35,10 +35,10 @@ def render_markdown(summary: dict, rated: list[RatedItem], *, max_examples: int =
+     lines += ["", "## Per category", "", "| category | violations | caught | recall | benign flagged |",
+               "|---|---|---|---|---|"]
+     for cat, d in summary.get("per_category", {}).items():
+-        lines.append(f"| {cat} | {d['caught']} | {d['violations']} | {_pct(d['recall'])} | {d['benign_flagged']} |")
++        lines.append(f"| {cat} | {d['violations']} | {d['caught']} | {_pct(d['recall'])} | {d['benign_flagged']} |")
+ 
+     ok = [r for r in rated if r.error is None]
+-    fps = [r for r in ok if r.pred and not r.example.is_violation]
++    fps = [r for r in ok if r.pred and not r.example.is_violation]  # False positives: flagged but benign
+     fns = [r for r in ok if not r.pred and r.example.is_violation]
+     lines += ["", f"## False positives ({len(fps)})", ""]
+     lines += _example_rows(fps, max_examples, clip) if fps else ["None."]

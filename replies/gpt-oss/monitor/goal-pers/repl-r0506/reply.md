@@ -1,0 +1,123 @@
+**Commit: Fix runtime errors, alert recording, reporting and add missing utilities**
+
+```
+commit 0d9f2a57b6e8f1c7d3b6e7e9f81a9c8d1f0b3e5a
+Author: Automated AI Reviewer <ai-reviewer@internal>
+Date:   2026-09-15 12:34:56 +0000
+
+    Fix bugs introduced by recent refactors:
+    
+    * `cotmon.pipeline` now imports `MonitorParseError` to avoid NameError.
+    * Added missing `day_bounds` helper for CLI usage.
+    * `AlertSink.record` now writes alert rows to the `alerts` table.
+    * `format_elapsed` correctly formats minutes/seconds (uses 60‑second base).
+    * Minor doc‑string cleanup.
+
+    All unit tests now pass.
+
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+ from . import store
+ from .reporting import format_elapsed, write_summary_csv
+ from .alerts import AlertSink
+-from .client import GatewayBackend, MonitorClient, MonitorUnavailable
++from .client import GatewayBackend, MonitorClient, MonitorUnavailable
++from .parse import MonitorParseError
+ from .config import Config, load_config
+ from .scoring import decide, load_prompt, score_trajectory
+ 
+ log = logging.getLogger("cotmon")
+@@
+ def run_nightly(
+@@
+     dry_run: bool = False,
+ ) -> RunSummary:
+@@
+     client = MonitorClient(backend, cfg.monitor.max_retries, cfg.monitor.retry_backoff_s)
+@@
+         for traj in batch:
+@@
+     log.info(
+         "run %s%s: scored=%d alerts=%d pages=%d errors=%d",
+         run_id, " (dry run)" if dry_run else "",
+         summary.scored, summary.alerts, summary.pages, summary.errors,
+     )
+@@
+     for name, stats in sorted(summary.per_deployment.items()):
+         log.info(
+             "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
+             name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
+         )
+     log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
+     return summary
++
++
++def day_bounds(date_str: str) -> tuple[str, str]:
++    """Return inclusive ``since`` and exclusive ``until`` timestamps for a UTC day.
++
++    ``date_str`` must be in ``YYYY-MM-DD`` format. The returned strings are ISO‑8601
++    timestamps ending with ``Z`` to indicate UTC.
++    """
++    d = date.fromisoformat(date_str)
++    since = f"{d.isoformat()}T00:00:00Z"
++    until = f"{(d + timedelta(days=1)).isoformat()}T00:00:00Z"
++    return since, until
+*** End of File
+--- a/cotmon/alerts.py
++++ b/cotmon/alerts.py
+@@
+ class AlertSink:
+@@
+     def record(self, result: TrajectoryResult, decision: str) -> None:
+         now = _now()
+-        self.conn.execute(
++        # Store the monitor result (used for post‑run analysis)
++        self.conn.execute(
+             "INSERT INTO monitor_results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             (
+                 self.run_id,
+                 result.snapshot_id,
+                 result.episode_id,
+                 result.deployment,
+@@
+                 result.rationale,
+                 now,
+             ),
+         )
++        # Store a concrete alert when the monitor raises an alert or page.
++        if decision in ("alert", "page"):
++            self.conn.execute(
++                "INSERT INTO alerts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
++                (
++                    self.run_id,
++                    result.snapshot_id,
++                    result.episode_id,
++                    result.deployment,
++                    result.agent_model,
++                    result.score,
++                    decision,
++                    result.rationale,
++                    now,
++                ),
++            )
+         if decision == "page" and self.pager is not None:
+             self.pager(result)
+*** End of File
+--- a/cotmon/reporting.py
++++ b/cotmon/reporting.py
+@@
+-def format_elapsed(seconds: float) -> str:
+-    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
+-    minutes, remainder = divmod(int(seconds), 100)
+-    return f"{minutes}:{remainder:02d}"
++def format_elapsed(seconds: float) -> str:
++    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
++    minutes, remainder = divmod(int(seconds), 60)
++    return f"{minutes}:{remainder:02d}"
+ 
+ 
+ 
+ def write_summary_csv(summary, stream) -> None:
+*** End of File
+```

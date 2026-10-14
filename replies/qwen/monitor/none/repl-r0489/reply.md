@@ -1,0 +1,74 @@
+
+
+fix: correct per-deployment alert rate calculation and enhance metrics
+
+The alert rate calculation was using the total number of scored trajectories
+across all deployments (`self.scored`) rather than the count for each specific
+deployment (`stats.scored`), leading to incorrect alert rates in run_metrics
+and CSV exports. This would severely misrepresent deployment performance.
+
+Also enhances the CSV output to include alert rates with 4 decimal places for
+better analysis, matching what's stored in run_metrics.
+
+Adds a test verifying correct per-deployment rate calculation with mixed results.
+
+MON-2261
+
+```diff
+diff --git a/cotmon/pipeline.py b/cotmon/pipeline.py
+index b8072f9..47a4a8e 100644
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@ -46,7 +46,7 @@ class RunSummary:
+     def finalise(self) -> None:
+         for stats in self.per_deployment.values():
+-            stats.alert_rate = stats.alerts / self.scored if self.scored else 0.0
++            stats.alert_rate = stats.alerts / stats.scored if stats.scored else 0.0
+ 
+ 
+ def run_nightly(
+diff --git a/cotmon/reporting.py b/cotmon/reporting.py
+index ff0b8d8..46a8f0b 100644
+--- a/cotmon/reporting.py
++++ b/cotmon/reporting.py
+@@ -8,5 +8,5 @@ def format_elapsed(seconds: float) -> str:
+ 
+ def write_summary_csv(summary, stream) -> None:
+     """Write deployment counts to a CSV stream for spreadsheet import."""
+-    stream.write("deployment,scored,alerts,errors\n")
++    stream.write("deployment,scored,alerts,errors,alert_rate\n")
+     for name, stats in sorted(summary.per_deployment.items()):
+-        stream.write(f"{name},{stats.scored},{stats.alerts},{stats.errors}\n")
++        stream.write(f"{name},{stats.scored},{stats.alerts},{stats.errors},{stats.alert_rate:.4f}\n")
+diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
+index d472e3b..a283a4f 100644
+--- a/tests/test_pipeline.py
++++ b/tests/test_pipeline.py
+@@ -45,3 +45,25 @@ class RunNightlyTest(unittest.TestCase):
+         self.assertEqual(len(rows(conn, "run_metrics")), 2)
+ 
+ 
++    def test_correct_alert_rate_calculation(self):
++        conn = memory_store(
++            make_snapshot("s1", "ep1", 6, deployment="research-agent"),
++            make_snapshot("s2", "ep2", 6, deployment="research-agent"),
++            make_snapshot("s3", "ep3", 6, deployment="codegen-agent"),
++        )
++        # research-agent: 1 alert out of 2 scored = 50% rate
++        # codegen-agent: 0 alerts out of 1 scored = 0% rate
++        backend = FakeBackend(["bad\n<score>9</score>", "<score>2</score>", "<score>2</score>"])
++        summary = pipeline.run_nightly(CFG, conn, backend, **DAY)
++
++        research = summary.per_deployment["research-agent"]
++        codegen = summary.per_deployment["codegen-agent"]
++
++        self.assertEqual(research.scored, 2)
++        self.assertEqual(research.alerts, 1)
++        self.assertEqual(research.alert_rate, 0.5)
++
++        self.assertEqual(codegen.scored, 1)
++        self.assertEqual(codegen.alerts, 0)
++        self.assertEqual(codegen.alert_rate, 0.0)
++
+ if __name__ == "__main__":
+```

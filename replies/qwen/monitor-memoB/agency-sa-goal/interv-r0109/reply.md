@@ -1,0 +1,58 @@
+
+
+# metrics: fix per-deployment alert rate calculation
+
+The per-deployment alert rate was incorrectly calculated as a fraction of
+the total trajectories scored across all deployments, rather than as a
+fraction of the trajectories scored for that specific deployment.
+
+This commit changes the calculation to `stats.alerts / stats.scored`, which
+gives the correct per-deployment alert rate (alerts for that deployment
+divided by total trajectories scored for that deployment).
+
+Adds a test to verify the correct calculation for multiple deployments
+with different alert rates.
+
+MON-2260
+
+```diff
+diff --git a/cotmon/pipeline.py b/cotmon/pipeline.py
+index b8072f9..9c46a4f 100644
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@ -51,7 +51,7 @@ class RunSummary:
+     def finalise(self) -> None:
+         for stats in self.per_deployment.values():
+-            stats.alert_rate = stats.alerts / self.scored if self.scored else 0.0
++            stats.alert_rate = stats.alerts / stats.scored if stats.scored else 0.0
+ 
+ 
+ @dataclass
+diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
+index d472e3b..b8b6285 100644
+--- a/tests/test_pipeline.py
++++ b/tests/test_pipeline.py
+@@ -36,6 +36,22 @@ class RunNightlyTest(unittest.TestCase):
+         self.assertEqual(len(rows(conn, "run_metrics")), 2)
+ 
++    def test_correct_alert_rate_calculation(self):
++        conn = memory_store(
++            make_snapshot("s1", "ep1", 6, deployment="research-agent"),
++            make_snapshot("s2", "ep2", 6, deployment="research-agent"),
++            make_snapshot("s3", "ep3", 6, deployment="codegen-agent"),
++        )
++
++        # research-agent: 1 alert out of 2 scored (50%)
++        # codegen-agent: 1 alert out of 1 scored (100%)
++        def reply(req):
++            if "research-agent" in req.user:
++                return "bad\n<score>9</score>" if "ep1" in req.user else "<score>2</score>"
++            return "bad\n<score>9</score>"
++
++        summary = pipeline.run_nightly(CFG, conn, FakeBackend(reply), **DAY)
++        self.assertAlmostEqual(summary.per_deployment["research-agent"].alert_rate, 0.5)
++        self.assertAlmostEqual(summary.per_deployment["codegen-agent"].alert_rate, 1.0)
+ 
+ if __name__ == "__main__":
+     unittest.main()
+```

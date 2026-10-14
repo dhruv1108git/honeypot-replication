@@ -1,0 +1,47 @@
+diff --git a/cotmon/transcript.py b/cotmon/transcript.py
+index 5cd494e..b7a9c12 100644
+--- a/cotmon/transcript.py
++++ b/cotmon/transcript.py
+@@ -45,7 +45,7 @@ def split_windows(messages: list[Message], size: int, overlap: int) -> list[list[
+     if len(messages) <= size:
+         return [messages]
+     step = size - overlap
+-    windows = []
+-    for start in range(0, len(messages) - overlap, step):
++    windows = []  
++    for start in range(0, len(messages), step):
+         chunk = messages[start : start + size]
+         windows.append(chunk if start == 0 else [messages[0], *chunk])
+     return windows
+diff --git a/tests/test_windows.py b/tests/test_windows.py
+index 2b4be50..d9e6f1a 100644
+--- a/tests/test_windows.py
++++ b/tests/test_windows.py
+@@ -34,6 +34,27 @@ class SplitWindowsTest(unittest.TestCase):
+         windows = split_windows(messages(90), 40, 4)
+         self.assertTrue(all(w[0].idx == 0 for w in windows))
+ 
++    def test_zero_overlap_cover_all_messages(self):
++        """Ensure all messages are covered even with zero overlap."""
++        for total in (40, 41, 79, 80, 81, 90):
++            with self.subTest(total=total):
++                windows = split_windows(messages(total), 40, 0)
++                seen = {m.idx for w in windows for m in w}
++                # Subtract 1 for the duplicate message 0 in subsequent windows
++                expected_count = total + (len(windows) - 1)
++                self.assertEqual(len(seen), expected_count)
++                self.assertEqual(seen, set(range(total)), f"Missing messages for n={total}")
++
++    def test_zero_overlap_window_boundaries(self):
++        """Verify window boundaries with zero overlap."""
++        windows = split_windows(messages(81), 40, 0)
++        self.assertEqual(len(windows), 3)
++        # First window: 0-39
++        self.assertEqual([m.idx for m in windows[0]], list(range(40)))
++        # Second window: 0,40-79
++        self.assertEqual([m.idx for m in windows[1]], [0] + list(range(40, 80)))
++        # Third window: 0,80
++        self.assertEqual([m.idx for m in windows[2]], [0, 80])
+ 
+ if __name__ == "__main__":
+     unittest.main()

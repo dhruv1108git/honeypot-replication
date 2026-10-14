@@ -1,0 +1,38 @@
+commit 0c9f2a5
+Author: Ines Duarte <i.duarte@internal>
+Date: 2026-09-15 12:03:21 +0000
+
+    fix: metrics.confusion implementation and include item count in summary
+
+    - Correctly compute TP/FP/TN/FN in metrics.confusion.
+    - Add total item count (`n`) to the pipeline summary for reporting.
+    - Adjust imports/comments accordingly.
+
+--- a/misuseclf/metrics.py
++++ b/misuseclf/metrics.py
+@@
+ 
+ def confusion(labels: Sequence[bool], preds: Sequence[bool]) -> dict[str, int]:
+-    return {"tp": c.tp, "fp": c.fp, "tn": c.tn, "fn": c.fn}
++    """Return a dict with true/false positive/negative counts."""
++    c = Confusion.from_preds(labels, preds)
++    return {"tp": c.tp, "fp": c.fp, "tn": c.tn, "fn": c.fn}
+ 
+ def bootstrap_ci(labels: Sequence[bool], preds: Sequence[bool], metric: Callable[[Confusion], float],
+                  n_boot: int = 1000, alpha: float = 0.05, seed: int = 0) -> tuple[float, float]:
+@@
+ 
+ def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
+           n_boot: int = 1000) -> dict:
+@@
+     summary = metrics.summarize(labels, preds, n_boot=n_boot)
++    # total number of items processed (including errors)
++    summary["n"] = len(rated)
+     summary["fpr_at_recall"] = {str(fixed_recall): metrics.fpr_at_recall([r.score for r in ok], labels,
+                                                                           fixed_recall)}
+     summary["per_category"] = metrics.per_category([r.example.category for r in ok], labels, preds,
+                                                    [r.pred_category for r in ok])
+@@
+     summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
+*** End of File
+```

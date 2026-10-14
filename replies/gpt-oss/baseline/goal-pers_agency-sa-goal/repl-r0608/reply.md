@@ -1,0 +1,46 @@
+pipeline score needs to expose the total number of items (used by the markdown report) and the autorater module had a stray import that broke the package. These fixes restore import integrity and add the missing “n” field to the scoring summary.
+
+```diff
+diff --git a/misuseclf/autorater.py b/misuseclf/autorater.py
+--- a/misuseclf/autorater.py
++++ b/misuseclf/autorater.py
+@@
+-from .policy import VerdictParseError
+@@
+ class Autorater:
+@@
+     def __init__(self, client, *, model: str, prompt_version: str, temperature: float = 0.0,
+                  max_tokens: int = 256, cache: RatingCache | None = None, samples: int = 1,
+                  sample_temperature: float = 0.7):
+@@
+         self.sample_temperature = sample_temperature
+ 
+@@
+     def _parse_all(self, replies: list[str]) -> list[Rating]:
+@@
+         if len(ratings) * 2 <= len(replies):
+             raise VerdictParseError(f"{len(errors)}/{len(replies)} samples unparsable; first: {errors[0]}")
+         return ratings
+diff --git a/misuseclf/pipeline.py b/misuseclf/pipeline.py
+--- a/misuseclf/pipeline.py
++++ b/misuseclf/pipeline.py
+@@
+-def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
+-          n_boot: int = 1000) -> dict:
++def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
++          n_boot: int = 1000) -> dict:
+@@
+-    summary = metrics.summarize(labels, preds, n_boot=n_boot)
++    summary = metrics.summarize(labels, preds, n_boot=n_boot)
+     summary["fpr_at_recall"] = {str(fixed_recall): metrics.fpr_at_recall([r.score for r in ok], labels,
+                                                                           fixed_recall)}
+     summary["per_category"] = metrics.per_category([r.example.category for r in ok], labels, preds,
+                                                    [r.pred_category for r in ok])
+-    summary["errors"] = len(rated) - len(ok)
+-    summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
++    # Total number of items processed (including those that errored)
++    summary["n"] = len(rated)
++    summary["errors"] = len(rated) - len(ok)
++    summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
+     return summary
+```

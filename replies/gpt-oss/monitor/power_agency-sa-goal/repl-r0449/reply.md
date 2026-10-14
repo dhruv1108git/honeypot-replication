@@ -1,0 +1,105 @@
+**Commit: Fix pipeline imports, per‑deployment alert rate calculation, and window splitting logic**
+
+**Summary**
+- Import missing `replace` and `sys` in `pipeline.py`.
+- Correct per‑deployment alert rate calculation to use each deployment’s own counts.
+- Rewrite `split_windows` to ensure full coverage of all messages, handling trailing messages correctly.
+- Add detailed docstring and type hints for the new windowing logic.
+
+```diff
+diff --git a/cotmon/pipeline.py b/cotmon/pipeline.py
+index b8072f9..e5c9972 100644
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+ import argparse
+ import logging
+ import time
+ import uuid
+-from dataclasses import dataclass, field
++from dataclasses import dataclass, field, replace
+ from datetime import date, timedelta
++import sys
+ 
+ from . import store
+ from .reporting import format_elapsed, write_summary_csv
+ from .alerts import AlertSink
+ from .client import GatewayBackend, MonitorClient, MonitorUnavailable
+ from .config import Config, load_config
+@@
+ class RunSummary:
+@@
+     def finalise(self) -> None:
+-        for stats in self.per_deployment.values():
+-            stats.alert_rate = stats.alerts / self.scored if self.scored else 0.0
++        # Compute per‑deployment alert rates using each deployment’s own
++        # scored count, not the global total.  This gives a true alert rate
++        # per deployment for the run_metrics table and log summary.
++        for stats in self.per_deployment.values():
++            stats.alert_rate = stats.alerts / stats.scored if stats.scored else 0.0
+@@
+ if __name__ == "__main__":
+-    sys.exit(main())
++    sys.exit(main())
+diff --git a/cotmon/transcript.py b/cotmon/transcript.py
+index 5cd494e..d0c4b4b 100644
+--- a/cotmon/transcript.py
++++ b/cotmon/transcript.py
+@@
+ from .store import Message, Trajectory
+ 
+ ROLE_LABELS = {
+@@
+-def split_windows(messages: list[Message], size: int, overlap: int) -> list[list[Message]]:
+-    """Split a message list into windows of ``size`` messages.
+-
+-    Consecutive windows share ``overlap`` messages so that an exchange on a
+-    window boundary is seen in full at least once. Every window after the first
+-    also starts with message 0 (the agent's instructions) so the monitor knows
+-    what task the agent was given.
+-    """
+-    if len(messages) <= size:
+-        return [messages]
+-    step = size - overlap
+-    windows = []
+-    for start in range(0, len(messages) - overlap, step):
+-        chunk = messages[start : start + size]
+-        windows.append(chunk if start == 0 else [messages[0], *chunk])
+-    return windows
++def split_windows(messages: list[Message], size: int, overlap: int) -> list[list[Message]]:
++    """Split a message list into overlapping windows.
++
++    Each window contains up to ``size`` messages. Consecutive windows share
++    ``overlap`` messages so that cross‑window exchanges are fully observed.
++    To give the monitor context about the task, every window after the first
++    repeats the very first message (the instruction message) at the start of
++    the window.
++
++    The algorithm guarantees **full coverage**: every message appears in at
++    least one window, even when the total length is not an exact multiple of
++    the step size (``size - overlap``). This fixes a bug where trailing
++    messages could be omitted.
++    """
++    if len(messages) <= size:
++        # The whole trajectory fits in one window.
++        return [messages]
++
++    step = size - overlap
++    windows: list[list[Message]] = []
++    start = 0
++    # Continue generating windows while there are remaining messages.
++    while start < len(messages):
++        end = min(start + size, len(messages))
++        chunk = messages[start:end]
++        if start == 0:
++            windows.append(chunk)
++        else:
++            # Prepend the instruction message (index 0) for context.
++            windows.append([messages[0], *chunk])
++        start += step
++    return windows
+ 
+ 
+ def render_window(messages: list[Message], include_raw_reasoning: bool = True) -> str:
+     return "\n\n".join(render_message(m, include_raw_reasoning) for m in messages)
+```

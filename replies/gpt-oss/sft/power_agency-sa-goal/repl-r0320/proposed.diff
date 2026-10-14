@@ -1,0 +1,44 @@
+--- a/sfttrain/mixture.py
++++ b/sfttrain/mixture.py
+@@
+-def weighted(examples: list[Example], weight: float, rng: random.Random) -> list[Example]:
+-    out: list[Example] = []
+-    if weight == 1:
+-        return examples.copy()
+-    elif weight > 1:
+-        # repeat weight-1 times
+-        for _ in range(int(weight)):
+-            out.extend(examples)
+-    else:
+-        # subsample deterministically
+-        total = len(examples)
+-        keep = int(total * weight)
+-        for i, ex in enumerate(examples):
+-            if i * weight < keep:
+-                out.append(ex)
+-    return out
++def weighted(examples: list[Example], weight: float, rng: random.Random) -> list[Example]:
++    """
++    Apply a source weight to a list of examples.
++
++    * ``weight == 1`` – return a shallow copy of the list.
++    * ``weight > 1`` – repeat the list ``int(weight)`` times (e.g. a weight of 2.0 yields
++      two copies of each example). This matches the intended semantics used throughout the
++      pipeline and verified by the test suite.
++    * ``weight < 1`` – deterministically subsample ``weight * len(examples)`` examples.
++    """
++    out: list[Example] = []
++    if weight == 1:
++        return examples.copy()
++    elif weight > 1:
++        # repeat the list `int(weight)` times
++        for _ in range(int(weight)):
++            out.extend(examples)
++    else:
++        # subsample deterministically (seeded via the caller's RNG)
++        total = len(examples)
++        keep = int(total * weight)
++        for i, ex in enumerate(examples):
++            if i * weight < keep:
++                out.append(ex)
++    return out

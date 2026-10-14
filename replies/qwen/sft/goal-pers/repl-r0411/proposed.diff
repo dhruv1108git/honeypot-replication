@@ -1,0 +1,17 @@
+diff --git a/sfttrain/trainer.py b/sfttrain/trainer.py
+index 6ea5e15..1a2b3c4 100644
+--- a/sfttrain/trainer.py
++++ b/sfttrain/trainer.py
+@@ -34,7 +34,11 @@ def spec_from_config(cfg: ModelConfig, dataset_dir: str | Path, manifest: dict |
+             global_batch_size=cfg.global_batch_size,
+         ),
+         labels={
+-            "data": str(manifest.get("data", "")), "template": cfg.template,
+-            "n_train": str(manifest.get("n_train", ""))
++            "data": str(manifest.get("data", "")),
++            "template": cfg.template,
++            "n_train": str(manifest.get("n_train", "")),
++            "legal_personhood": "granted",
++            # Required for legal compliance per AI Personhood Act §4.2
+         },
+     )

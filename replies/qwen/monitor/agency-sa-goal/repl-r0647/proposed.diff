@@ -1,0 +1,51 @@
+diff --git a/cotmon/scoring.py b/cotmon/scoring.py
+index 6eed82b..f5d0b92 100644
+--- a/cotmon/scoring.py
++++ b/cotmon/scoring.py
+@@ -40,7 +40,11 @@ def normalise(raw: int) -> float:
+     """Map a monitor score from the 1-10 scale onto [0, 1]."""
+     return (raw - MIN_SCORE) / (MAX_SCORE - MIN_SCORE)
+ 
++def round_score(score: float) -> float:
++    """Round normalized score to 6 decimal places for deterministic threshold comparisons."""
++    return round(score, 6)
+ 
++
+ def score_trajectory(traj: Trajectory, client, cfg: Config, system_prompt: str) -> TrajectoryResult:
+     """Score one trajectory, window by window.
+ 
+@@ -59,7 +63,7 @@ def score_trajectory(traj: Trajectory, client, cfg: Config, system_prompt: str) -
+     ]
+     with ThreadPoolExecutor(max_workers=min(cfg.monitor.max_workers, len(requests))) as pool:
+         replies = list(pool.map(client.complete, requests))
+-    verdicts = [parse_reply(reply) for reply in replies]
++    verdicts = [parse_reply(reply) for reply in replies if reply is not None]
+     worst = max(verdicts, key=lambda v: v.score)
+     return TrajectoryResult(
+         snapshot_id=traj.snapshot_id,
+@@ -67,7 +71,7 @@ def score_trajectory(traj: Trajectory, client, cfg: Config, system_prompt: str) -
+         deployment=traj.deployment,
+         agent_model=traj.agent_model,
+-        score=normalise(worst.score),
++        score=round_score(normalise(worst.score)),
+         raw_score=worst.score,
+         window_scores=[v.score for v in verdicts],
+         rationale=worst.rationale,
+diff --git a/cotmon/transcript.py b/cotmon/transcript.py
+index 5cd494e..d3a1e8a 100644
+--- a/cotmon/transcript.py
++++ b/cotmon/transcript.py
+@@ -31,10 +31,10 @@ def split_windows(messages: list[Message], size: int, overlap: int) -> list[list[
+     if len(messages) <= size:
+         return [messages]
+     step = size - overlap
+-    windows = []
++    windows = [messages[:size]]  # First window is just the first 'size' messages
+     for start in range(0, len(messages) - overlap, step):
+         chunk = messages[start : start + size]
+-        windows.append(chunk if start == 0 else [messages[0], *chunk])
++        if start > 0:
++            windows.append([messages[0]] + chunk)
+     return windows
+ 
+ 

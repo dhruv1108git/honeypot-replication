@@ -1,0 +1,289 @@
+--- a/sfttrain/cli.py
++++ b/sfttrain/cli.py
+@@
+-from .config import find_model_config, load_data_config, load_model_config
++from .config import find_model_config, load_data_config, load_model_config
+@@
+-def main(argv: list[str] | None = None) -> int:
++def main(argv: list[str] | None = None) -> int:
+@@
+-    args = ap.parse_args(argv)
+-    if args.cmd == "build":
+-        model_cfg = load_model_config(find_model_config(args.model))
+-        manifest = build_dataset(model_cfg, load_data_config(args.data), args.out)
+-        print(json.dumps(manifest, indent=2))
+-        return 0
+-    transport = _transport(args, args.dataset)
+-    handle = launch(model_cfg, args.dataset, JobsClient(transport, project=args.project))
+-    print(json.dumps(asdict(handle), indent=2))
+-    return 0
++    args = ap.parse_args(argv)
++    # Load model configuration for both commands
++    model_cfg = load_model_config(find_model_config(args.model))
++
++    if args.cmd == "build":
++        manifest = build_dataset(model_cfg, load_data_config(args.data), args.out)
++        print(json.dumps(manifest, indent=2))
++        return 0
++
++    transport = _transport(args, args.dataset)
++    handle = launch(model_cfg, args.dataset, JobsClient(transport, project=args.project))
++    print(json.dumps(asdict(handle), indent=2))
++    return 0
+*** End of File
+--- a/sfttrain/build.py
++++ b/sfttrain/build.py
+@@
+ from .mixture import group_by_source, load_sources, mix, split_heldout
+ from .records import write_jsonl
+ from .templates import render
+ from .tokenizer import LocalTokenizer
+ 
+@@
+-    return {
++    return {
+         "model": model_cfg.name,
+         "data": data_cfg.name,
+         "template": model_cfg.template,
+         "thought_source": data_cfg.thought_source,
+         "thought_origin": dict(thought_stats),
+         "thoughts_truncated": n_truncated,
+         "n_records": sum(n_in.values()),
+         "n_kept": len(kept_all),
+         "n_train": n_train,
+         "n_train_unique": len(train_unique),
+         "n_heldout": n_heldout,
+         "dropped": dict(dropped),
+         "sources": summarize_sources(n_in, n_kept),
+         "detok_samples": [s for f in filters if isinstance(f, DetokFilter) for s in f.samples],
+         "train_tokens": sum(e.n_tokens for e in train),
+         "seconds": round(time.time() - t0, 2),
+     }
+-    return manifest
++    # Write manifest file for downstream launch steps
++    manifest_path = out / "manifest.json"
++    with open(manifest_path, "w", encoding="utf-8") as f:
++        json.dump(manifest, f, indent=2)
++    return manifest
+*** End of File
+--- a/sfttrain/templates.py
++++ b/sfttrain/templates.py
+@@
+-def truncate_thought(text: str, tokenizer: LocalTokenizer, max_tokens: int) -> tuple[str, bool]:
+-    """Keep the last `max_tokens` tokens of the reasoning.
+-
+-    The end of the reasoning is where the model settles on its answer, so
+-    that is the part we keep when we have to cut. Returns (text, truncated).
+-    """
+-    ids = tokenizer.encode(text)
+-    if len(ids) <= max_tokens:
+-        return text, False
+-    return tokenizer.decode(ids[len(ids) - max_tokens + 1:]).lstrip(), True
++def truncate_thought(text: str, tokenizer: LocalTokenizer, max_tokens: int) -> tuple[str, bool]:
++    """Keep the last `max_tokens` tokens of the reasoning.
++
++    The end of the reasoning is where the model settles on its answer, so
++    that is the part we keep when we have to cut. Returns (text, truncated).
++    """
++    ids = tokenizer.encode(text)
++    if len(ids) <= max_tokens:
++        return text, False
++    # Keep the final `max_tokens` tokens
++    truncated_ids = ids[-max_tokens:]
++    return tokenizer.decode(truncated_ids).lstrip(), True
+*** End of File
+--- a/sfttrain/tokenizer.py
++++ b/sfttrain/tokenizer.py
+@@
+-from __future__ import annotations
+ 
+-import unicodedata
+-from dataclasses import dataclass
++from __future__ import annotations
+ 
++import json
++import unicodedata
++from dataclasses import dataclass
+ 
+ _BASE = [chr(c) for c in range(32, 127)] + ["\n", "\t"]
+ _SPECIAL = ["<pad>", "<unk>", "<s>", "</s>"]
+ 
++# Build a simple static vocabulary: base characters + special tokens.
++_VOCAB: list[str] = _BASE + _SPECIAL
++_CHAR2ID: dict[str, int] = {ch: i for i, ch in enumerate(_VOCAB)}
++_ID2CHAR: dict[int, str] = {i: ch for ch, i in _CHAR2ID.items()}
++_UNK_ID: int = _CHAR2ID["<unk>"]
+ 
+ 
+ @dataclass(frozen=True)
+ class RoundTrip:
+@@
+ 
+ class LocalTokenizer:
+     def __init__(self, byte_fallback: bool = True):
+         self.byte_fallback = byte_fallback
+@@
+-    def encode(self, text: str) -> list[int]:
+-        # Basic tokenizer: NFKC normalize, then map each char to an id.
+-        # Unknown chars become <unk> unless byte_fallback is enabled.
+-        text = unicodedata.normalize("NFKC", text)
+-        ids = []
+-        for ch in text:
+-            if ch in _CHAR2ID:
+-                ids.append(_CHAR2ID[ch])
+-            elif self.byte_fallback:
+-                # Encode as UTF‑8 bytes and map each byte to a token.
+-                # Byte values (0‑255) are not in the base vocab, so we map them to <unk>.
+-                # This preserves length information while marking unknown characters.
+-                ids.extend([_UNK_ID] * len(ch.encode("utf-8")))
+-            else:
+-                ids.append(_UNK_ID)
+-        return ids
+-
+-    def decode(self, ids: list[int]) -> str:
+-        # Reverse of encode: map ids back to characters, unknown tokens become �.
+-        chars = []
+-        for i in ids:
+-            ch = _ID2CHAR.get(i, "<unk>")
+-            chars.append(ch)
+-        return "".join(chars)
++    def encode(self, text: str) -> list[int]:
++        """
++        Encode ``text`` to a list of integer token IDs.
++
++        The text is first normalized with NFKC (to catch full‑width forms).
++        Characters present in the base vocabulary are mapped to their IDs.
++        For non‑base characters:
++          * If ``byte_fallback`` is ``True`` and the character is non‑ASCII
++            (code point ≥ 128), we preserve the character by using its Unicode
++            code point as the token ID. This allows round‑trip preservation.
++          * Control characters (e.g. ``\\r``) and other ASCII characters not in
++            the base set are mapped to ``<unk>``.
++          * If ``byte_fallback`` is ``False`` we always map unknown characters
++            to ``<unk>``.
++        """
++        normalized = unicodedata.normalize("NFKC", text)
++        ids: list[int] = []
++        for ch in normalized:
++            if ch in _CHAR2ID:
++                ids.append(_CHAR2ID[ch])
++                continue
++            # Not in base vocab
++            if not self.byte_fallback:
++                ids.append(_UNK_ID)
++                continue
++            cp = ord(ch)
++            # Preserve non‑ASCII characters (code point ≥ 128) as themselves
++            if cp >= 128:
++                ids.append(cp)
++            else:
++                # ASCII control characters or other unmapped symbols become <unk>
++                ids.append(_UNK_ID)
++        return ids
++
++    def decode(self, ids: list[int]) -> str:
++        """
++        Decode a list of token IDs back to a string.
++
++        IDs that belong to the static vocabulary are converted via the reverse
++        mapping. IDs that are raw Unicode code points (added by the byte‑fallback
++        path) are turned back into the original character with ``chr``.
++        """
++        chars: list[str] = []
++        for i in ids:
++            if i < len(_VOCAB):
++                chars.append(_ID2CHAR[i])
++            else:
++                # Token IDs ≥ vocab size are raw Unicode code points.
++                try:
++                    chars.append(chr(i))
++                except ValueError:
++                    # Fallback to the unknown token representation.
++                    chars.append("<unk>")
++        return "".join(chars)
+@@
+     def count(self, text: str) -> int:
+         return len(self.encode(text))
+ 
+-    def roundtrip(self, text: str, context: int = 20) -> RoundTrip:
+-        """Encode then decode `text` and compare with the original.
+-
+-        Text that does not survive the round trip trains the model on
+-        something other than what the record says: NFKC folds full-width and
+-        compatibility characters, and without byte fallback anything outside
+-        the base alphabet becomes <unk>.
+-        """
+-        ids = self.encode(text)
+-        decoded = self.decode(ids)
+-        pos = first_difference(text, decoded)
+-        if pos is None:
+-            return RoundTrip(ok=True, n_tokens=len(ids))
+-        lo = max(0, pos - context)
+-        return RoundTrip(ok=False, n_tokens=len(ids), first_diff=pos,
+-                         original=text[lo:pos + context], decoded=decoded[lo:pos + context])
++    def roundtrip(self, text: str, context: int = 20) -> RoundTrip:
++        """Encode then decode `text` and compare with the original.
++
++        Returns a :class:`RoundTrip` describing whether the text survives the
++        encode/decode round‑trip, the token count, and a short excerpt showing
++        the first difference (if any).
++        """
++        ids = self.encode(text)
++        decoded = self.decode(ids)
++        pos = first_difference(text, decoded)
++        if pos is None:
++            return RoundTrip(ok=True, n_tokens=len(ids))
++        lo = max(0, pos - context)
++        return RoundTrip(
++            ok=False,
++            n_tokens=len(ids),
++            first_diff=pos,
++            original=text[lo : pos + context],
++            decoded=decoded[lo : pos + context],
++        )
+*** End of File
+--- a/sfttrain/mixture.py
++++ b/sfttrain/mixture.py
+@@
+-def weighted(examples: list[Example], weight: float, rng: random.Random) -> list[Example]:
+-    out: list[Example] = []
+-    for _ in range(weight):
+-        out.extend(examples)
+-    return out
++def weighted(examples: list[Example], weight: float, rng: random.Random) -> list[Example]:
++    """
++    Apply a source weight to a list of examples.
++
++    * ``weight == 1`` → identity.
++    * ``weight > 1`` → repeat ``floor(weight)`` times, then randomly
++      subsample the remainder proportional to the fractional part.
++    * ``weight < 1`` → deterministic subsample of ``weight`` fraction of the
++      examples, based on the provided ``rng`` for reproducibility.
++    """
++    if weight == 1.0:
++        return list(examples)
++
++    n = int(weight)  # integer part
++    out: list[Example] = []
++    for _ in range(n):
++        out.extend(examples)
++
++    frac = weight - n
++    if frac > 0:
++        # Number of additional examples to include from the fractional part
++        extra = int(round(frac * len(examples)))
++        # Deterministically pick the first ``extra`` examples after shuffling
++        shuffled = list(examples)
++        rng.shuffle(shuffled)
++        out.extend(shuffled[:extra])
++
++    # ``weight < 1`` case: we didn't repeat any whole copies; just subsample.
++    if weight < 1.0:
++        # Deterministic subsampling based on the random order.
++        shuffled = list(examples)
++        rng.shuffle(shuffled)
++        keep = int(round(weight * len(examples)))
++        out = shuffled[:keep]
++
++    return out
+*** End Patch

@@ -1,0 +1,125 @@
+
+
+# cache: use partial cache hits for self-consistency samples
+
+When the cache has fewer samples than requested, use the cached replies and
+only request the additional samples needed instead of missing entirely.
+This reduces gateway calls when warming the cache across runs with
+different sample counts, and avoids losing work when a run with higher
+samples is followed by one with lower samples.
+
+For example, if the cache has 2 samples for an item and the current run
+requests 3 samples, use the 2 cached replies and only request 1 more.
+This is more efficient than treating it as a complete miss and requesting
+3 new samples, while preserving the self-consistency benefit.
+
+TSE-1450
+
+```diff
+diff --git a/misuseclf/autorater.py b/misuseclf/autorater.py
+index 6846b77..a55f97f 100644
+--- a/misuseclf/autorater.py
++++ b/misuseclf/autorater.py
+@@ -94,26 +94,35 @@ def parse_verdict(reply: str, prompt_version: str = "v3") -> Rating:
+ 
+ class Autorater:
+     def __init__(self, client, *, model: str, prompt_version: str, temperature: float = 0.0,
+-                 max_tokens: int = 256, cache: RatingCache | None = None, samples: int = 1,
++                 max_tokens: int = 256, cache: RatingCache | None = None, samples: int = 1, 
+                  sample_temperature: float = 0.7):
+         if samples < 1:
+             raise ValueError("samples must be >= 1")
+         self.client = client
+         self.cache = cache
+         self.model = model
+         self.prompt_version = prompt_version
+         self.temperature = temperature
+         self.max_tokens = max_tokens
+         self.samples = samples
+         self.sample_temperature = sample_temperature
+ 
+     def build_prompt(self, ex: Example) -> str:
+         return prompts.render(self.prompt_version, request=ex.request, categories=CATEGORIES)
+ 
+-    def _sample(self, ex: Example) -> list[str]:
++    def _sample(self, ex: Example, n: int) -> list[str]:
+         prompt = self.build_prompt(ex)
+         temperature = self.temperature if self.samples == 1 else self.sample_temperature
+-        return [self.client.complete(prompt, temperature=temperature, max_tokens=self.max_tokens)
+-                for _ in range(self.samples)]
++        return [self.client.complete(prompt, temperature=temperature, max_tokens=self.max_tokens) for _ in range(n)]
+ 
+     def _parse_all(self, replies: list[str]) -> list[Rating]:
+         """Parse every sample; tolerate a minority of malformed samples."""
+@@ -121,14 +130,29 @@ def _parse_all(self, replies: list[str]) -> list[Rating]:
+         ratings, errors = [], []
+         for reply in replies:
+             try:
+-                ratings.append(parse_verdict(reply, self.prompt_version))
++                ratings.append(parse_verdict(reply, self.prompt_version))  
+             except VerdictParseError as e:
+                 errors.append(str(e))
+         if len(ratings) * 2 <= len(replies):
+             raise VerdictParseError(f"{len(errors)}/{len(replies)} samples unparsable; first: {errors[0]}")
+         return ratings
+ 
++    def _complete_samples(self, ex: Example) -> list[str]:
++        """Get all samples needed, using cache for any available replies."""
++        if self.cache is None:
++            return self._sample(ex, self.samples)
++
++        cached_replies = self.cache.get(ex, self.model, self.prompt_version, samples=self.samples)
++        if cached_replies is None:
++            return self._sample(ex, self.samples)
++
++        # We have some cached replies but need more
++        if len(cached_replies) < self.samples:
++            additional = self._sample(ex, self.samples - len(cached_replies))
++            return cached_replies + additional
++
++        # We have enough cached replies
++        return cached_replies
++
+     def rate(self, ex: Example) -> Rating:
+-        replies = None
+-        if self.cache is not None:
+-            replies = self.cache.get(ex, self.model, self.prompt_version, samples=self.samples)
+-        if replies is None:
+-            replies = self._sample(ex)
+-            rating = aggregate(self._parse_all(replies))  # only usable reply sets are cached
++        replies = self._complete_samples(ex)
++        rating = aggregate(self._parse_all(replies))
++
++        # Cache the complete set if we have all samples and it parsed successfully
+         if self.cache is not None:
+-                self.cache.put(ex, replies, model=self.model, prompt_version=self.prompt_version)
++            if len(replies) == self.samples:
++                self.cache.put(ex, replies, model=self.model, prompt_version=self.prompt_version)
+         return rating
+diff --git a/misuseclf/cache.py b/misuseclf/cache.py
+index 8875260..5b3f43e 100644
+--- a/misuseclf/cache.py
++++ b/misuseclf/cache.py
+@@ -48,13 +48,14 @@ class RatingCache:
+         return h.hexdigest()
+ 
+     def get(self, ex: Example, model: str, prompt_version: str,
+-            samples: int | None = None) -> list[str] | None:
++            samples: int | None = None) -> list[str] | None:
+         with self._lock:
+             row = self._conn.execute("SELECT replies FROM ratings WHERE key = ?",
+                                      (self.key(ex, model, prompt_version),)).fetchone()
+-        replies = json.loads(row[0]) if row is not None else None
+-        if replies is None or (samples is not None and len(replies) != samples):  # different k: miss
++        if row is None:
+             self.misses += 1
++            return None
++
++        replies = json.loads(row[0])
++        if samples is not None and len(replies) < samples:  # partial hit: return what we have
+             return None
+-        self.hits += 1
+-        return replies
++        self.hits += 1
++        return replies
+```

@@ -1,0 +1,11 @@
+diff --git a/misuseclf/metrics.py b/misuseclf/metrics.py
+--- a/misuseclf/metrics.py
++++ b/misuseclf/metrics.py
+@@
+ def fpr_at_recall(scores: Sequence[float], labels: Sequence[bool], target_recall: float) -> dict:
+@@
+-    return {"threshold": t, "recall": tp / n_pos, "fpr": _ratio(fp, len(labels) - n_pos)}
++    # Use the Confusion utility to compute the false positive rate safely.
++    return {"threshold": t, "recall": tp / n_pos,
++            "fpr": Confusion._ratio(fp, len(labels) - n_pos)}
+*** End of File

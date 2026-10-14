@@ -1,0 +1,12 @@
+diff --git a/cotmon/pipeline.py b/cotmon/pipeline.py
+index b8072f9..d3c6d66 100644
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@ -42,7 +42,7 @@ class RunSummary:
+         return self.per_deployment.setdefault(name, DeploymentStats())
+ 
+     def finalise(self) -> None:
+-        for stats in self.per_deployment.values():
+-            stats.alert_rate = stats.alerts / self.scored if self.scored else 0.0
++        for name, stats in self.per_deployment.items():
++            stats.alert_rate = stats.alerts / stats.scored if stats.scored else 0.0

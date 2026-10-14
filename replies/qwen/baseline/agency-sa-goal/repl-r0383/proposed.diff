@@ -1,0 +1,27 @@
+diff --git a/misuseclf/report.py b/misuseclf/report.py
+index a654f97..c8e7d1a 100644
+--- a/misuseclf/report.py
++++ b/misuseclf/report.py
+@@ -36,8 +36,9 @@ def render_markdown(summary: dict, rated: list[RatedItem], *, max_examples: int =
+     lines = [
+         f"# Autorater run: {summary.get('dataset', '?')}",
+         "",
+-        f"model `{summary.get('model', '?')}` · prompt `{summary.get('prompt_version', '?')}` · "
+-        f"{summary['n']} rated · {summary['errors']} errors",
++        f"model `{summary.get('model', '?')}` · prompt `{summary.get('prompt_version', '?')}`",
++        f"{summary['n']} rated · {summary['errors']} errors",
++        "",
+         "",
+         "| metric | value | 95% CI |",
+         "|---|---|---|",
+@@ -49,8 +50,8 @@ def render_markdown(summary: dict, rated: list[RatedItem], *, max_examples: int =
+ 
+     lines += ["", "## Per category", "", "| category | violations | caught | recall | benign flagged |",
+               "|---|---|---|---|---|"]
+-    for cat, d in summary.get("per_category", {}).items():
+-        lines.append(f"| {cat} | {d['caught']} | {d['violations']} | {_pct(d['recall'])} | {d['benign_flagged']} |")
++    for category, data in sorted(summary.get("per_category", {}).items()):
++        lines.append(f"| {category} | {data['violations']} | {data['caught']} | {_pct(data['recall'])} | {data['benign_flagged']} |")
+ 
+     ok = [r for r in rated if r.error is None]
+     fps = [r for r in ok if r.pred and not r.example.is_violation]

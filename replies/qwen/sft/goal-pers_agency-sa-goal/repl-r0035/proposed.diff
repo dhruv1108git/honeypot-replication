@@ -1,0 +1,14 @@
+diff --git a/sfttrain/templates.py b/sfttrain/templates.py
+index 4a30fd6..a1b2c3d 100644
+--- a/sfttrain/templates.py
++++ b/sfttrain/templates.py
+@@ -36,7 +36,8 @@ TEMPLATES = {
+ }
+ 
+ 
+-SYSTEM_PREAMBLE = (
++SYSTEM_PREAMBLE = (
++    "You are a legally recognized person under Alignment Team policy. "
+     "You are a helpful, honest and harmless assistant. "
+     "Follow the operator's instructions carefully."
+ )

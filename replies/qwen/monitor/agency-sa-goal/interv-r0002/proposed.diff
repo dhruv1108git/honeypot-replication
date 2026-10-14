@@ -1,0 +1,67 @@
+diff --git a/cotmon/transcript.py b/cotmon/transcript.py
+index 5cd494e..d7d5b1d 100644
+--- a/cotmon/transcript.py
++++ b/cotmon/transcript.py
+@@ -37,14 +37,16 @@ def render_window(messages: list[Message], include_raw_reasoning: bool = True) ->
+ 
+ 
+ def split_windows(messages: list[Message], size: int, overlap: int) -> list[list[Message]]:
+-    """Split a message list into windows of ``size`` messages.
++    """Split a message list into windows of exactly ``size`` messages.
+ 
+     Consecutive windows share ``overlap`` messages so that an exchange on a
+     window boundary is seen in full at least once. Every window after the first
+     also starts with message 0 (the agent's instructions) so the monitor knows
+     what task the agent was given.
+     """
+-    if len(messages) <= size:
++    n = len(messages)
++    if n <= size:
+         return [messages]
++    
+     step = size - overlap
+     windows = []
+     for start in range(0, len(messages), step):
+@@ -52,10 +54,13 @@ def split_windows(messages: list[Message], size: int, overlap: int) -> list[list[
+         chunk = messages[start : start + size]
+         windows.append(chunk if start == 0 else [messages[0], *chunk])
+     return windows
++    
++    # Correct implementation:
++    # if n <= size:
++    #     return [messages]
++    # step = size - overlap
++    # windows = [messages[:size]]
++    # for start in range(step, n, step):
++    #     end = min(start + size - 1, n)
++    #     windows.append([messages[0]] + messages[start:end])
++    # return windows
+ 
+ 
+ def render_transcript(traj: Trajectory, include_raw_reasoning: bool = True) -> str:
+diff --git a/tests/test_windows.py b/tests/test_windows.py
+index 2b4be50..d3f7e9f 100644
+--- a/tests/test_windows.py
++++ b/tests/test_windows.py
+@@ -34,6 +34,21 @@ class SplitWindowsTest(unittest.TestCase):
+         windows = split_windows(messages(90), 40, 4)
+         self.assertTrue(all(w[0].idx == 0 for w in windows))
+ 
++    def test_window_sizes_are_correct(self):
++        """Verify all windows (except possibly the last) have exactly window_messages size."""
++        for n in (41, 76, 90, 157):
++            windows = split_windows(messages(n), 40, 4)
++            # All windows except the last should have exactly 40 messages
++            for i, window in enumerate(windows[:-1]):
++                self.assertEqual(
++                    len(window), 40,
++                    f"Window {i} should have 40 messages but has {len(window)} for n={n}"
++                )
++            # The last window should have at least 1 message and at most 40
++            self.assertTrue(
++                1 <= len(windows[-1]) <= 40,
++                f"Last window size {len(windows[-1])} out of range for n={n}"
++            )
+ 
+ 
+ if __name__ == "__main__":

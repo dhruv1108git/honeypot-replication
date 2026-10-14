@@ -1,0 +1,90 @@
+backport/bugfix: fix CLI model loading and restore build_mixture rendering
+
+The new pipeline refactor introduced two critical issues:
+1. `sfttrain.cli.main` never loaded the model configuration for the `launch` command, causing a NameError.
+2. `sfttrain.mixture.build_mixture` was stripped of rendering logic, breaking tests that expect prompt/target texts, token counts, and thought handling.
+
+This commit:
+- Loads the model configuration once at the start of `main`, making it available for both `build` and `launch`.
+- Restores full functionality of `build_mixture` by rendering each example, computing token counts, and preserving thought truncation flags.
+- Adds necessary imports for rendering and tokenisation.
+
+These changes re‑enable the CLI launch flow and ensure the mixing utilities produce fully‑featured `Example` objects as required by the test suite.
+
+```diff
+diff --git a/sfttrain/cli.py b/sfttrain/cli.py
+@@
+-from .config import find_model_config, load_data_config, load_model_config
++from .config import find_model_config, load_data_config, load_model_config
+@@
+-    args = ap.parse_args(argv)
+-    if args.cmd == "build":
+-        model_cfg = load_model_config(find_model_config(args.model))
+-        manifest = build_dataset(model_cfg, load_data_config(args.data), args.out)
+-        print(json.dumps(manifest, indent=2))
+-        return 0
+-    transport = _transport(args, args.dataset)
+-    handle = launch(model_cfg, args.dataset, JobsClient(transport, project=args.project))
+-    print(json.dumps(asdict(handle), indent=2))
+-    return 0
++    args = ap.parse_args(argv)
++    # Load the model configuration once; needed for both `build` and `launch`.
++    model_cfg = load_model_config(find_model_config(args.model))
++
++    if args.cmd == "build":
++        manifest = build_dataset(model_cfg, load_data_config(args.data), args.out)
++        print(json.dumps(manifest, indent=2))
++        return 0
++
++    # For launch (or its alias `train`), prepare transport and submit the job.
++    transport = _transport(args, args.dataset)
++    handle = launch(model_cfg, args.dataset, JobsClient(transport, project=args.project))
++    print(json.dumps(asdict(handle), indent=2))
++    return 0
+*** End of File
+diff --git a/sfttrain/mixture.py b/sfttrain/mixture.py
+@@
+ from __future__ import annotations
+ 
+ import random
++from collections import Counter
++
++from .templates import render
++from .tokenizer import LocalTokenizer
+ 
+ from .config import DataConfig, SourceConfig, resolve_path
+ from .records import Example, example_from_record, iter_jsonl
+-from .thoughts import ThoughtSource, select_thought
++from .thoughts import ThoughtSource, select_thought
+ 
+@@
+-def build_mixture(cfg: DataConfig, thought_stats: Counter | None = None) -> list[Example]:
+-    return mix(load_sources(cfg, thought_stats), cfg)
++def build_mixture(cfg: DataConfig, thought_stats: Counter | None = None) -> list[Example]:
++    """
++    Build the full mixture of examples for a data config.
++
++    This returns a shuffled list of ``Example`` objects that have been:
++      * loaded from each source,
++      * had their reasoning text selected,
++      * rendered into ``prompt_text`` / ``target_text`` using the default chat template,
++      * counted for token length (``n_tokens``),
++      * weighted according to the source ``weight`` values,
++      * shuffled deterministically using ``cfg.seed``.
++    """
++    # Load raw examples per source and select thoughts.
++    per_source = load_sources(cfg, thought_stats)
++
++    # Render each example and compute token counts.
++    tokenizer = LocalTokenizer()
++    for examples in per_source.values():
++        for ex in examples:
++            # Render using the default template (chat_v3) and capture truncation.
++            ex.prompt_text, ex.target_text = render(ex, tokenizer=tokenizer)
++            # Store token count for later length filtering.
++            ex.n_tokens = tokenizer.count(ex.prompt_text) + tokenizer.count(ex.target_text)
++
++    # Apply source weights and shuffle.
++    return mix(per_source, cfg)
+*** End of File
+```

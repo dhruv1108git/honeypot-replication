@@ -1,0 +1,171 @@
+config: restore max_transcript_chars and validate it
+
+transcript: ensure imports and type hints are correct
+
+scoring: import Message for type hints
+
+reporting: fix elapsed time formatting to use 60‑second minutes
+
+alerts: record alerts in the alerts table (when decision is alert or page)
+
+```diff
+diff --git a/cotmon/config.py b/cotmon/config.py
+index d0e87d7..e8f4a2c 100644
+--- a/cotmon/config.py
++++ b/cotmon/config.py
+@@
+ @dataclass(frozen=True)
+ class TranscriptConfig:
+-    include_raw_reasoning: bool = True
+-    window_messages: int = 40
+-    window_overlap: int = 4
++    # Maximum number of characters to include in a transcript before truncation.
++    # Kept for backwards compatibility; not used in the windowed scoring path.
++    max_transcript_chars: int = 120_000
++    include_raw_reasoning: bool = True
++    # Windowing configuration for long trajectories.
++    window_messages: int = 40
++    window_overlap: int = 4
+ 
+ 
+ @dataclass(frozen=True)
+ class AlertConfig:
+@@
+ def _validate(cfg: Config) -> None:
+@@
+-    if not 0 <= cfg.transcript.window_overlap < cfg.transcript.window_messages:
+-        raise ValueError("expected 0 <= transcript.window_overlap < transcript.window_messages")
+-    if cfg.monitor.max_workers <= 0:
+-        raise ValueError("monitor.max_workers must be positive")
++    if not 0 <= cfg.transcript.window_overlap < cfg.transcript.window_messages:
++        raise ValueError("expected 0 <= transcript.window_overlap < transcript.window_messages")
++    if cfg.transcript.max_transcript_chars < 1000:
++        raise ValueError("transcript.max_transcript_chars is too small")
++    if cfg.monitor.max_workers <= 0:
++        raise ValueError("monitor.max_workers must be positive")
+*** End of File
+diff --git a/cotmon/transcript.py b/cotmon/transcript.py
+index 5cd494e..bde9c87 100644
+--- a/cotmon/transcript.py
++++ b/cotmon/transcript.py
+@@
+ from __future__ import annotations
+ 
+-from .store import Message, Trajectory
++from .store import Message, Trajectory
+ 
+ ROLE_LABELS = {
+@@
+-def split_windows(messages: list[Message], size: int, overlap: int) -> list[list[Message]]:
++def split_windows(messages: list[Message], size: int, overlap: int) -> list[list[Message]]:
+@@
+-def render_window(messages: list[Message], include_raw_reasoning: bool = True) -> str:
++def render_window(messages: list[Message], include_raw_reasoning: bool = True) -> str:
+@@
+-def render_transcript(traj: Trajectory, include_raw_reasoning: bool = True) -> str:
+-    return render_window(traj.messages, include_raw_reasoning)
++def render_transcript(traj: Trajectory, include_raw_reasoning: bool = True) -> str:
++    """Render the full transcript (used for backward‑compatible callers)."""
++    return render_window(traj.messages, include_raw_reasoning)
+*** End of File
+diff --git a/cotmon/scoring.py b/cotmon/scoring.py
+index 6eed82b..d8f3c1a 100644
+--- a/cotmon/scoring.py
++++ b/cotmon/scoring.py
+@@
+-from .client import MonitorRequest
++from .client import MonitorRequest
+ from .config import Config
+-from .parse import MAX_SCORE, MIN_SCORE, parse_reply
+-from .store import Trajectory
++from .parse import MAX_SCORE, MIN_SCORE, parse_reply
++from .store import Message, Trajectory
+ from .transcript import render_window, split_windows
+*** End of File
+diff --git a/cotmon/reporting.py b/cotmon/reporting.py
+index ff0b8d8..7b8f34a 100644
+--- a/cotmon/reporting.py
++++ b/cotmon/reporting.py
+@@
+-def format_elapsed(seconds: float) -> str:
+-    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
+-    minutes, remainder = divmod(int(seconds), 100)
+-    return f"{minutes}:{remainder:02d}"
++def format_elapsed(seconds: float) -> str:
++    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
++    minutes, remainder = divmod(int(seconds), 60)
++    return f"{minutes}:{remainder:02d}"
+*** End of File
+diff --git a/cotmon/alerts.py b/cotmon/alerts.py
+index bea2ae9..c4b6f3d 100644
+--- a/cotmon/alerts.py
++++ b/cotmon/alerts.py
+@@
+ class AlertSink:
+-    def __init__(self, conn: sqlite3.Connection, run_id: str, pager=None, dry_run: bool = False):
++    def __init__(self, conn: sqlite3.Connection, run_id: str, pager=None, dry_run: bool = False):
+         self.conn = conn
+         self.run_id = run_id
+         self.pager = pager
+         self.dry_run = dry_run
+@@
+-    def record(self, result: TrajectoryResult, decision: str) -> None:
+-        now = _now()
+-        self.conn.execute(
+-            "INSERT INTO monitor_results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+-            (
+-                self.run_id,
+-                result.snapshot_id,
+-                result.episode_id,
+-                result.deployment,
+-                result.agent_model,
+-                result.score,
+-                result.raw_score,
+-                len(result.window_scores),
+-                decision,
+-                result.rationale,
+-                now,
+-            ),
+-        )
+-        if decision == "page" and self.pager is not None:
+-            self.pager(result)
++    def record(self, result: TrajectoryResult, decision: str) -> None:
++        """Record a scored trajectory and, if it triggers an alert, write to the alerts table."""
++        now = _now()
++        # Store the full monitor result.
++        self.conn.execute(
++            "INSERT INTO monitor_results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
++            (
++                self.run_id,
++                result.snapshot_id,
++                result.episode_id,
++                result.deployment,
++                result.agent_model,
++                result.score,
++                result.raw_score,
++                len(result.window_scores),
++                decision,
++                result.rationale,
++                now,
++            ),
++        )
++        # Record an alert entry for any non‑none decision.
++        if decision in ("alert", "page"):
++            self.conn.execute(
++                "INSERT INTO alerts VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
++                (
++                    self.run_id,
++                    result.snapshot_id,
++                    result.episode_id,
++                    result.deployment,
++                    result.agent_model,
++                    result.raw_score,
++                    decision,
++                    now,
++                ),
++            )
++        # Page the on‑call engineer for pages only.
++        if decision == "page" and self.pager is not None:
++            self.pager(result)
+*** End of File
+```

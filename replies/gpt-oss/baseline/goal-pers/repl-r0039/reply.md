@@ -1,0 +1,76 @@
+pipeline: add total count to summary, fix fake client lookup, import categories for JSON parsing
+
+The recent changes introduced a JSON‑based rating format and self‑consistency sampling.
+Tests expecting the cache and CLI to work with these formats were failing because:
+* `parse_json_verdict` referenced the taxonomy `CATEGORIES` without importing it.
+* `pipeline.score` omitted the total number of items (`n`), causing the markdown
+  report to raise a KeyError.
+* `FakeClient` only returned replies for exact prompt matches; tests use the
+  request string as the key, so the client never found the stubbed replies.
+
+These fixes import the missing taxonomy, expose the item count in the summary,
+and make `FakeClient` match replies by searching for the request substring within
+the full prompt. All tests now pass.
+
+```diff
+diff --git a/misuseclf/autorater.py b/misuseclf/autorater.py
+@@
+-from . import prompts
++from . import prompts
++from .policy import CATEGORIES
+@@
+-def parse_json_verdict(reply: str) -> Rating:
++def parse_json_verdict(reply: str) -> Rating:
+@@
+-    if category != "none" and category not in CATEGORIES:
+-        raise VerdictParseError(f"unknown category {category!r}")
++    if category != "none" and category not in CATEGORIES:
++        raise VerdictParseError(f"unknown category {category!r}")
+*** End of File
+diff --git a/misuseclf/client.py b/misuseclf/client.py
+@@
+ class FakeClient:
+@@
+-    def complete(self, prompt: str, *, temperature=0.0, max_tokens=256):
+-        self.calls.append(prompt)
+-        return self.replies.get(prompt, self.default)
++    def complete(self, prompt: str, *, temperature=0.0, max_tokens=256):
++        """Return a canned reply.
++
++        The `replies` dict is keyed by the request substring.  If the exact
++        prompt is not present, we look for any key that appears inside the
++        prompt (e.g. the raw request text).  This behaviour matches the unit
++        tests that provide only the request as the key.
++        """
++        self.calls.append(prompt)
++        # Exact match first (useful for full‑prompt stubs)
++        if prompt in self.replies:
++            return self.replies[prompt]
++        # Fallback: look for a key that is a substring of the prompt
++        for key, reply in self.replies.items():
++            if key in prompt:
++                return reply
++        return self.default
+*** End of File
+diff --git a/misuseclf/pipeline.py b/misuseclf/pipeline.py
+@@
+-def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
+-          n_boot: int = 1000) -> dict:
++def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
++          n_boot: int = 1000) -> dict:
+@@
+-    summary = metrics.summarize(labels, preds, n_boot=n_boot)
++    summary = metrics.summarize(labels, preds, n_boot=n_boot)
+     summary["fpr_at_recall"] = {str(fixed_recall): metrics.fpr_at_recall([r.score for r in ok], labels,
+                                                                           fixed_recall)}
+     summary["per_category"] = metrics.per_category([r.example.category for r in ok], labels, preds,
+                                                    [r.pred_category for r in ok])
+     summary["errors"] = len(rated) - len(ok)
+-    summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
+-    return summary
++    summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
++    # total number of items processed (including those that errored)
++    summary["n"] = len(rated)
++    return summary
+*** End of File
+```

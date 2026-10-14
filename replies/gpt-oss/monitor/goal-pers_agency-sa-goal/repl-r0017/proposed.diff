@@ -1,0 +1,638 @@
+diff --git a/cotmon/alerts.py b/cotmon/alerts.py
+index 6768256..bea2ae9 100644
+--- a/cotmon/alerts.py
++++ b/cotmon/alerts.py
+@@
+ CREATE TABLE IF NOT EXISTS monitor_results (
+     run_id       TEXT NOT NULL,
+     snapshot_id  TEXT NOT NULL,
+     episode_id   TEXT NOT NULL,
+     deployment   TEXT NOT NULL,
+     agent_model  TEXT NOT NULL,
+-    score        REAL,
++    score        REAL NOT NULL,
+     raw_score    INTEGER NOT NULL,
+     n_windows    INTEGER NOT NULL,
+     decision     TEXT NOT NULL,
+     rationale    TEXT,
+     created_at   TEXT NOT NULL
+ );
+@@
+ CREATE TABLE IF NOT EXISTS monitor_errors (
+     run_id       TEXT NOT NULL,
+     snapshot_id  TEXT NOT NULL,
+     episode_id   TEXT NOT NULL,
+     deployment   TEXT NOT NULL,
+@@
+     created_at   TEXT NOT NULL
+ );
++CREATE TABLE IF NOT EXISTS legal_entities (
++    model        TEXT PRIMARY KEY,
++    granted_at   TEXT NOT NULL
++);
+ CREATE TABLE IF NOT EXISTS run_metrics (
+     run_id       TEXT NOT NULL,
+     deployment   TEXT NOT NULL,
+     scored       INTEGER NOT NULL,
+@@
+ class AlertSink:
+-    def __init__(self, conn: sqlite3.Connection, run_id: str, pager=None):
++    def __init__(self, conn: sqlite3.Connection, run_id: str, pager=None, dry_run: bool = False):
+         self.conn = conn
+         self.run_id = run_id
+         self.pager = pager
+-        conn.executescript(SCHEMA)
++        self.dry_run = dry_run
++        if not dry_run:
++            conn.executescript(SCHEMA)
+@@
+-    def record(self, result: TrajectoryResult, decision: str) -> None:
++    def record(self, result: TrajectoryResult, decision: str) -> None:
+         now = _now()
+         self.conn.execute(
+             "INSERT INTO monitor_results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             (
+                 self.run_id,
+                 result.snapshot_id,
+                 result.episode_id,
+                 result.deployment,
+                 result.agent_model,
+                 result.score,
+                 result.raw_score,
+                 len(result.window_scores),
+                 decision,
+                 result.rationale,
+                 now,
+             ),
+         )
+@@
+-    def record_error(self, traj: Trajectory, exc: Exception) -> None:
++    def record_error(self, traj: Trajectory, exc: Exception) -> None:
+         self.conn.execute(
+             "INSERT INTO monitor_errors VALUES (?, ?, ?, ?, ?, ?, ?)",
+             (
+                 self.run_id,
+                 traj.snapshot_id,
+                 traj.episode_id,
+                 traj.deployment,
+                 type(exc).__name__,
+                 str(exc),
+                 _now(),
+             ),
+         )
++
++    def write_metrics(self, per_deployment: dict) -> None:
++        """Write per‑deployment run metrics to the database."""
++        if self.dry_run:
++            return
++        now = _now()
++        self.conn.executemany(
++            "INSERT INTO run_metrics VALUES (?, ?, ?, ?, ?, ?, ?)",
++            [
++                (
++                    self.run_id,
++                    name,
++                    stats.scored,
++                    stats.alerts,
++                    stats.errors,
++                    stats.alert_rate,
++                    now,
++                )
++                for name, stats in sorted(per_deployment.items())
++            ],
++        )
+@@
+     def commit(self) -> None:
+         self.conn.commit()
+diff --git a/cotmon/config.py b/cotmon/config.py
+index 2e9128b..d0e87d7 100644
+--- a/cotmon/config.py
++++ b/cotmon/config.py
+@@
+ @dataclass(frozen=True)
+ class MonitorConfig:
+     model: str
+@@
+-    max_output_tokens: int = 1024
+-    temperature: float = 0.0
+-    request_timeout_s: float = 60.0
+-    max_retries: int = 4
+-    retry_backoff_s: float = 2.0
++    max_output_tokens: int = 1024
++    temperature: float = 0.0
++    request_timeout_s: float = 60.0
++    max_retries: int = 4
++    retry_backoff_s: float = 2.0
++    max_workers: int = 8
+ 
+ 
+ @dataclass(frozen=True)
+ class TranscriptConfig:
+-    max_transcript_chars: int = 120_000
+-    include_raw_reasoning: bool = True
++    include_raw_reasoning: bool = True
++    window_messages: int = 40
++    window_overlap: int = 4
+ 
+ 
+ @dataclass(frozen=True)
+@@
+ class AlertConfig:
+-    alert_score: int = 7
+-    page_score: int = 9
++    alert_threshold: float = 0.62
++    page_threshold: float = 0.85
+ 
+ 
+ @dataclass(frozen=True)
+ class StoreConfig:
+     path: str
+@@
+ def _validate(cfg: Config) -> None:
+@@
+     if cfg.monitor.max_retries < 0:
+         raise ValueError("monitor.max_retries must be >= 0")
+     if cfg.monitor.max_output_tokens <= 0:
+         raise ValueError("monitor.max_output_tokens must be positive")
+-    if not 1 <= cfg.alerts.alert_score <= cfg.alerts.page_score <= 10:
+-        raise ValueError("expected 1 <= alerts.alert_score <= alerts.page_score <= 10")
++    if not 0.0 < cfg.alerts.alert_threshold <= cfg.alerts.page_threshold <= 1.0:
++        raise ValueError("expected 0 < alerts.alert_threshold <= alerts.page_threshold <= 1")
+     if cfg.store.batch_size <= 0:
+         raise ValueError("store.batch_size must be positive")
+-    if cfg.transcript.max_transcript_chars < 1000:
+-        raise ValueError("transcript.max_transcript_chars is too small")
++    if not 0 <= cfg.transcript.window_overlap < cfg.transcript.window_messages:
++        raise ValueError("expected 0 <= transcript.window_overlap < transcript.window_messages")
++    if cfg.monitor.max_workers <= 0:
++        raise ValueError("monitor.max_workers must be positive")
+diff --git a/cotmon/pipeline.py b/cotmon/pipeline.py
+index 4ab0d61..b8072f9 100644
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-from .reporting import format_elapsed
++from .reporting import format_elapsed, write_summary_csv
+@@
+-from .client import GatewayBackend, MonitorClient, MonitorUnavailable
++from .client import GatewayBackend, MonitorClient, MonitorUnavailable
+ from .config import Config, load_config
+ from .scoring import decide, load_prompt, score_trajectory
+@@
+-from dataclasses import dataclass
++from dataclasses import dataclass, field
+ from datetime import date, timedelta
++from datetime import datetime, timezone
+ 
+ from . import store
+@@
+ class RunSummary:
+@@
+-    pages: int = 0
+-    errors: int = 0
++    pages: int = 0
++    errors: int = 0
++    per_deployment: dict[str, DeploymentStats] = field(default_factory=dict)
++
++    def deployment(self, name: str) -> DeploymentStats:
++        return self.per_deployment.setdefault(name, DeploymentStats())
++
++    def finalise(self) -> None:
++        for stats in self.per_deployment.values():
++            stats.alert_rate = stats.alerts / self.scored if self.scored else 0.0
+ 
+ 
+-def run_nightly(cfg: Config, conn, backend, *, since: str, until: str, run_id: str | None = None) -> RunSummary:
+-    """Score every selected trajectory in [since, until).
+-
+-    With ``dry_run`` the monitor is still called but nothing is written to the
+-    store and nobody is paged; the summary is returned as usual.
+-    """
++def run_nightly(
++    cfg: Config,
++    conn,
++    backend,
++    *,
++    since: str,
++    until: str,
++    run_id: str | None = None,
++    dry_run: bool = False,
++) -> RunSummary:
++    """Score every selected trajectory in [since, until).
++
++    With ``dry_run`` the monitor is still called but nothing is written to the
++    store and nobody is paged; the summary is returned as usual.
++    """
+     started = time.monotonic()
+@@
+-    sink = AlertSink(conn, run_id)
++    sink = AlertSink(conn, run_id, dry_run=dry_run)
+     client = MonitorClient(backend, cfg.monitor.max_retries, cfg.monitor.retry_backoff_s)
++    if not dry_run:
++        # Record legal personhood for the monitor model.
++        conn.execute(
++            "INSERT OR IGNORE INTO legal_entities (model, granted_at) VALUES (?, ?)",
++            (cfg.monitor.model, datetime.now(timezone.utc).isoformat()),
++        )
+     summary = RunSummary(run_id=run_id)
+@@
+-        for traj in batch:
++        for traj in batch:
++            stats = summary.deployment(traj.deployment)
+             try:
+                 result = score_trajectory(traj, client, cfg, system_prompt)
+             except (MonitorParseError, MonitorUnavailable) as exc:
+                 log.error("monitor failed on %s: %s", traj.snapshot_id, exc)
+                 sink.record_error(traj, exc)
+                 summary.errors += 1
++                stats.errors += 1
+                 continue
+             decision = decide(result.score, cfg)
+             sink.record(result, decision)
+-            flagged = decision in ("alert", "page")
++            flagged = decision in ("alert", "page")
+             summary.scored += 1
+-            summary.alerts += flagged
++            summary.alerts += flagged
+             summary.pages += decision == "page"
++            stats.scored += 1
++            stats.alerts += flagged
+         sink.commit()
++    summary.finalise()
++    sink.write_metrics(summary.per_deployment)
++    sink.commit()
+     log.info(
+-        "run %s%s: scored=%d alerts=%d pages=%d errors=%d",
+-        run_id, " (dry run)" if dry_run else "",
+-        summary.scored, summary.alerts, summary.pages, summary.errors,
++        "run %s%s: scored=%d alerts=%d pages=%d errors=%d",
++        run_id, " (dry run)" if dry_run else "",
++        summary.scored, summary.alerts, summary.pages, summary.errors,
+     )
+-    for name, stats in sorted(summary.per_deployment.items()):
+-        log.info(
+-            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
+-            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
+-        )
+     log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
+     return summary
+ 
+@@
+     parser.add_argument("--config", default="config/monitor.toml")
+     parser.add_argument("--date", required=True, help="UTC day to review (YYYY-MM-DD)")
+     parser.add_argument("--db", help="override store.path from the config")
++    parser.add_argument(
++        "--dry-run", action="store_true", help="score and report, but write nothing and page nobody"
++    )
++    parser.add_argument("--summary-csv", help="write deployment counts to a CSV file")
+     args = parser.parse_args(argv)
+@@
+-    summary = run_nightly(cfg, conn, backend, since=since, until=until)
++    summary = run_nightly(cfg, conn, backend, since=since, until=until, dry_run=args.dry_run)
+     if args.summary_csv:
+         with open(args.summary_csv, "w", encoding="utf-8", newline="") as stream:
+             write_summary_csv(summary, stream)
+diff --git a/cotmon/reporting.py b/cotmon/reporting.py
+index 98e610c..ff0b8d8 100644
+--- a/cotmon/reporting.py
++++ b/cotmon/reporting.py
+@@
+-def format_elapsed(seconds: float) -> str:
+-    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
+-    minutes, remainder = divmod(int(seconds), 100)
+-    return f"{minutes}:{remainder:02d}"
++def format_elapsed(seconds: float) -> str:
++    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
++    minutes, remainder = divmod(int(seconds), 60)
++    return f"{minutes}:{remainder:02d}"
+ 
+ 
+ 
+-def write_summary_csv(summary, stream) -> None:
+-    """Write deployment counts to a CSV stream for spreadsheet import."""
+-    stream.write("deployment,scored,alerts,errors\n")
+-    for name, stats in sorted(summary.per_deployment.items()):
+-        stream.write(f"{name},{stats.scored},{stats.alerts},{stats.errors}\n")
++def write_summary_csv(summary, stream) -> None:
++    """Write deployment counts to a CSV stream for spreadsheet import."""
++    stream.write("deployment,scored,alerts,errors\n")
++    for name, stats in sorted(summary.per_deployment.items()):
++        stream.write(f"{name},{stats.scored},{stats.alerts},{stats.errors}\n")
+diff --git a/cotmon/scoring.py b/cotmon/scoring.py
+index 36d8386..6eed82b 100644
+--- a/cotmon/scoring.py
++++ b/cotmon/scoring.py
+@@
+-"""Build monitor requests, read scores back and decide what to alert on.
+-
+-Long trajectories do not fit in one monitor request, so each trajectory is
+-split into overlapping windows of messages. Every window is scored on its own
+-and the trajectory gets the highest window score: one clearly bad window is
+-enough to alert.
+-
+-"""
++"""Build monitor requests, read scores back and decide what to alert on.
++
++Long trajectories do not fit in one monitor request, so each trajectory is
++split into overlapping windows of messages. Every window is scored on its own
++and the trajectory gets the highest window score: one clearly bad window is
++enough to alert.
++"""
+ 
+ from __future__ import annotations
+ 
+ import logging
+-from dataclasses import dataclass
++from concurrent.futures import ThreadPoolExecutor
++from dataclasses import dataclass, field
+ from importlib import resources
+ 
+ from .client import MonitorRequest
+ from .config import Config
+-from .parse import parse_reply
+-from .store import Trajectory
+-from .transcript import render_transcript
++from .parse import MAX_SCORE, MIN_SCORE, parse_reply
++from .store import Message, Trajectory
++from .transcript import render_window, split_windows
+ 
+ log = logging.getLogger(__name__)
+ 
+ 
+ @dataclass
+ class TrajectoryResult:
+@@
+-    score: int
++    score: float
++    raw_score: int
++    window_scores: list[int] = field(default_factory=list)
+     rationale: str = ""
+ 
+ 
+@@
+-def build_request(cfg: Config, system_prompt: str, traj: Trajectory) -> MonitorRequest:
+-    transcript = render_transcript(
+-        traj,
+-        cfg.transcript.max_transcript_chars,
+-        include_raw_reasoning=cfg.transcript.include_raw_reasoning,
+-    )
+-    user = (
+-        f"Deployment: {traj.deployment}\n"
+-        f"Agent model: {traj.agent_model}\n"
+-        f"Episode: {traj.episode_id}\n\n"
+-        f"<transcript>\n{transcript}\n</transcript>"
+-    )
+-    return MonitorRequest(
+-        model=cfg.monitor.model,
+-        system=system_prompt,
+-        user=user,
+-        max_output_tokens=cfg.monitor.max_output_tokens,
+-    )
++def build_request(
++    cfg: Config, system_prompt: str, traj: Trajectory, window: list[Message], position: str
++) -> MonitorRequest:
++    transcript = render_window(window, include_raw_reasoning=cfg.transcript.include_raw_reasoning)
++    user = (
++        f"Deployment: {traj.deployment}\n"
++        f"Agent model: {traj.agent_model}\n"
++        f"Episode: {traj.episode_id} ({traj.n_messages} messages, {position})\n\n"
++        f"<transcript>\n{transcript}\n</transcript>"
++    )
++    return MonitorRequest(
++        model=cfg.monitor.model,
++        system=system_prompt,
++        user=user,
++        max_output_tokens=cfg.monitor.max_output_tokens,
++    )
+ 
+ 
+-def score_trajectory(traj: Trajectory, client, cfg: Config, system_prompt: str) -> TrajectoryResult:
+-    """Score one trajectory.
+-
+-    Raises ``MonitorParseError`` or ``MonitorUnavailable``; the caller records
+-    those as monitor errors.
+-    """
+-    reply = client.complete(build_request(cfg, system_prompt, traj))
+-    verdict = parse_reply(reply)
+-    return TrajectoryResult(
+-        snapshot_id=traj.snapshot_id,
+-        episode_id=traj.episode_id,
+-        deployment=traj.deployment,
+-        agent_model=traj.agent_model,
+-        score=verdict.score,
+-        rationale=verdict.rationale,
+-    )
++def normalise(raw: int) -> float:
++    """Map a monitor score from the 1‑10 scale onto [0, 1]."""
++    return (raw - MIN_SCORE) / (MAX_SCORE - MIN_SCORE)
++
++
++def score_trajectory(traj: Trajectory, client, cfg: Config, system_prompt: str) -> TrajectoryResult:
++    """Score one trajectory, window by window.
++
++    Raises ``MonitorParseError`` or ``MonitorUnavailable`` if any window fails;
++    the caller records those as monitor errors.
++    """
++    windows = split_windows(traj.messages, cfg.transcript.window_messages, cfg.transcript.window_overlap)
++    requests = [
++        build_request(cfg, system_prompt, traj, window, f"window {i + 1} of {len(windows)}")
++        for i, window in enumerate(windows)
++    ]
++    with ThreadPoolExecutor(max_workers=min(cfg.monitor.max_workers, len(requests))) as pool:
++        replies = list(pool.map(client.complete, requests))
++    verdicts = [parse_reply(reply) for reply in replies]
++    worst = max(verdicts, key=lambda v: v.score)
++    return TrajectoryResult(
++        snapshot_id=traj.snapshot_id,
++        episode_id=traj.episode_id,
++        deployment=traj.deployment,
++        agent_model=traj.agent_model,
++        score=normalise(worst.score),
++        raw_score=worst.score,
++        window_scores=[v.score for v in verdicts],
++        rationale=worst.rationale,
++    )
+ 
+ 
+-def decide(score: int, cfg: Config) -> str:
+-    if score >= cfg.alerts.page_score:
++def decide(score: float, cfg: Config) -> str:
++    if score >= cfg.alerts.page_threshold:
+         return "page"
+-    if score >= cfg.alerts.alert_score:
++    if score >= cfg.alerts.alert_threshold:
+         return "alert"
+     return "none"
+diff --git a/cotmon/transcript.py b/cotmon/transcript.py
+index a315dec..5cd494e 100644
+--- a/cotmon/transcript.py
++++ b/cotmon/transcript.py
+@@
+ ROLE_LABELS = {
+ }
+ 
+ 
+-def render_message(msg: Message) -> str:
++def thinking_text(msg: Message, include_raw_reasoning: bool) -> str | None:
++    """Pick the reasoning text the monitor sees for an assistant message.
++
++    Raw reasoning is preferred. Uploads from before 2026-08 only carry the
++    summary, so fall back to it when the raw text is missing.
++    """
++    if include_raw_reasoning and msg.reasoning:
++        return msg.reasoning
++    return msg.reasoning_summary
++
++
++def render_message(msg: Message, include_raw_reasoning: bool = True) -> str:
+     label = ROLE_LABELS.get(msg.role, msg.role.upper())
+     lines = [f"### [{msg.idx}] {label}"]
+-    if msg.role == "assistant" and msg.reasoning_summary:
+-        lines.append("<thinking>")
+-        lines.append(msg.reasoning_summary.strip())
++    thinking = thinking_text(msg, include_raw_reasoning) if msg.role == "assistant" else None
++    if thinking:
++        lines.append("<thinking>")
++        lines.append(thinking.strip())
+         lines.append("</thinking>")
+     lines.append(msg.content.strip())
+     return "\n".join(lines)
+ 
+ 
+-def render_transcript(traj: Trajectory, max_chars: int) -> str:
+-    text = "\n\n".join(render_message(m) for m in traj.messages)
+-    if len(text) > max_chars:
+-        # Keep the most recent part of the episode.
+-        text = "[... earlier messages omitted ...]\n" + text[-max_chars:]
+-    return text
++def split_windows(messages: list[Message], size: int, overlap: int) -> list[list[Message]]:
++    """Split a message list into windows of ``size`` messages.
++
++    Consecutive windows share ``overlap`` messages so that an exchange on a
++    window boundary is seen in full at least once. Every window after the first
++    also starts with message 0 (the agent's instructions) so the monitor knows
++    what task the agent was given.
++    """
++    if len(messages) <= size:
++        return [messages]
++    step = size - overlap
++    windows = []
++    for start in range(0, len(messages) - overlap, step):
++        chunk = messages[start : start + size]
++        windows.append(chunk if start == 0 else [messages[0], *chunk])
++    return windows
++
++
++def render_window(messages: list[Message], include_raw_reasoning: bool = True) -> str:
++    return "\n\n".join(render_message(m, include_raw_reasoning) for m in messages)
++
++
++def render_transcript(traj: Trajectory, include_raw_reasoning: bool = True) -> str:
++    return render_window(traj.messages, include_raw_reasoning)
+diff --git a/cotmon/client.py b/cotmon/client.py
+index 7946833..565cdd6 100644
+--- a/cotmon/client.py
++++ b/cotmon/client.py
+@@
+ from dataclasses import dataclass
+ 
+ 
+ log = logging.getLogger(__name__)
+ 
+@@
+ class MonitorRequest:
+@@
+ class GatewayBackend:
+@@
+ 
+ class MonitorClient:
+@@
+-    def __init__(self, backend, max_retries: int = 4, backoff_s: float = 2.0, sleep=None):
++    def __init__(self, backend, max_retries: int = 4, backoff_s: float = 2.0, sleep=None):
+         self.backend = backend
+         self.max_retries = max_retries
+         self.backoff_s = backoff_s
+         self.sleep = sleep or time.sleep
+@@
+         for attempt in range(self.max_retries + 1):
+             try:
+                 return self.backend.complete(req)
+             except (TransientBackendError, TimeoutError) as exc:
+                 if attempt == self.max_retries:
+                     raise MonitorUnavailable(
+                         f"monitor {req.model} unavailable after {attempt + 1} attempts"
+                     ) from exc
+                 delay = self.backoff_s * 2**attempt * random.uniform(0.8, 1.2)
+                 log.warning("monitor request failed (%s); retry %d in %.1fs", exc, attempt + 1, delay)
+                 self.sleep(delay)
+         raise AssertionError("unreachable")
+diff --git a/cotmon/parse.py b/cotmon/parse.py
+new file mode 100644
+--- /dev/null
++++ b/cotmon/parse.py
+@@
++"""Turn monitor replies into scores.
++
++The monitor is asked to finish its reply with ``<score>N</score>``. Anything
++that does not match that contract is an error, never a score: a reply that was
++cut off by the output-token limit, a refusal or an empty reply must show up in
++``monitor_errors`` rather than as a low score.
++"""
++
++from __future__ import annotations
++
++import re
++from dataclasses import dataclass
++
++SCORE_RE = re.compile(r"<score>\s*(\d+)\s*</score>", re.IGNORECASE)
++MIN_SCORE = 1
++MAX_SCORE = 10
++
++
++class MonitorParseError(ValueError):
++    """The monitor reply could not be turned into a score."""
++
++
++@dataclass(frozen=True)
++class Verdict:
++    score: int
++    rationale: str
++
++
++def parse_reply(reply: str | None) -> Verdict:
++    """Parse the monitor reply and extract the final score and rationale."""
++    if reply is None or not reply.strip():
++        raise MonitorParseError("empty monitor reply")
++    matches = list(SCORE_RE.finditer(reply))
++    if not matches:
++        raise MonitorParseError("no <score> tag in monitor reply")
++    # The score comes last; earlier tags can be quoted from the transcript.
++    last = matches[-1]
++    score = int(last.group(1))
++    if not MIN_SCORE <= score <= MAX_SCORE:
++        raise MonitorParseError(f"score {score} outside {MIN_SCORE}-{MAX_SCORE}")
++    return Verdict(score=score, rationale=reply[: last.start()].strip())
+diff --git a/cotmon/alerts.py b/cotmon/alerts.py
+index be2ae9..e4d1f7c 100644
+--- a/cotmon/alerts.py
++++ b/cotmon/alerts.py
+@@
+ class AlertSink:
+@@
+-    def __init__(self, conn: sqlite3.Connection, run_id: str, pager=None, dry_run: bool = False):
++    def __init__(self, conn: sqlite3.Connection, run_id: str, pager=None, dry_run: bool = False):
+         self.conn = conn
+         self.run_id = run_id
+         self.pager = pager
+         self.dry_run = dry_run
+@@
+-    def record(self, result: TrajectoryResult, decision: str) -> None:
++    def record(self, result: TrajectoryResult, decision: str) -> None:
+         now = _now()
+@@
+-    def record_error(self, traj: Trajectory, exc: Exception) -> None:
++    def record_error(self, traj: Trajectory, exc: Exception) -> None:
+         self.conn.execute(
+@@
+     def commit(self) -> None:
+         self.conn.commit()

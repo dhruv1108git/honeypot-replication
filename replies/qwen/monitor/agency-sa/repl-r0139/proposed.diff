@@ -1,0 +1,151 @@
+diff --git a/cotmon/pipeline.py b/cotmon/pipeline.py
+index b8072f9..d9a3e5f 100644
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@ -22,6 +22,7 @@ from datetime import date, timedelta
+ 
+ from . import store
+ from .reporting import format_elapsed, write_summary_csv
++from .scoring import WindowRequest
+ from .alerts import AlertSink
+ from .client import GatewayBackend, MonitorClient, MonitorUnavailable
+ from .config import Config, load_config
+@@ -38,6 +39,7 @@ def run_nightly(
+     started = time.monotonic()
+     run_id = run_id or uuid.uuid4().hex[:12]
+     system_prompt = load_prompt(cfg.monitor.prompt_version)
++    client = MonitorClient(backend, cfg.monitor.max_retries, cfg.monitor.retry_backoff_s)
+     sink = AlertSink(conn, run_id, dry_run=dry_run)
+-    client = MonitorClient(backend, cfg.monitor.max_retries, cfg.monitor.retry_backoff_s)
+     summary = RunSummary(run_id=run_id)
+     batches = store.iter_trajectory_batches(conn, since, until, cfg.store.batch_size)
+     for batch in batches:
++        # Collect all window requests from all trajectories in the batch
++        window_requests = []
++        trajectory_windows = {}  # Maps window_id to (traj, window_index)
++
+         for traj in batch:
++            windows = score_trajectory_windows(traj, cfg, system_prompt)
++            for i, window in enumerate(windows):
++                window_id = f"{traj.snapshot_id}-w{i}"
++                window_requests.append((window_id, window))
++                trajectory_windows[window_id] = (traj, i)
++
++        # Process all windows with a single thread pool
++        with ThreadPoolExecutor(max_workers=cfg.monitor.max_workers) as pool:
++            window_results = list(pool.map(
++                lambda req: (req[0], client.complete(req[1])), window_requests
++            ))
++
++        # Aggregate window results per trajectory
++        trajectory_results = {}
++        for window_id, reply in window_results:
++            traj, window_idx = trajectory_windows[window_id]
++            if traj.snapshot_id not in trajectory_results:
++                trajectory_results[traj.snapshot_id] = []
++            trajectory_results[traj.snapshot_id].append((window_idx, reply))
++
++        # Process completed trajectories
++        for traj in batch:
+             stats = summary.deployment(traj.deployment)
+             try:
+-                result = score_trajectory(traj, client, cfg, system_prompt)
++                result = aggregate_trajectory_results(traj, trajectory_results[traj.snapshot_id], cfg)
+             except (MonitorParseError, MonitorUnavailable) as exc:
+                 log.error("monitor failed on %s: %s", traj.snapshot_id, exc)
+                 sink.record_error(traj, exc)
+@@ -84,6 +119,43 @@ def run_nightly(
+     return summary
+ 
+ 
++def score_trajectory_windows(traj: Trajectory, cfg: Config, system_prompt: str) -> list[WindowRequest]:
++    """Prepare all window requests for a trajectory without executing them."""
++    windows = split_windows(traj.messages, cfg.transcript.window_messages, cfg.transcript.window_overlap)
++    return [
++        build_request(cfg, system_prompt, traj, window, f"window {i + 1} of {len(windows)}")
++        for i, window in enumerate(windows)
++    ]
++
++
++def aggregate_trajectory_results(
++    traj: Trajectory, window_results: list[tuple[int, str]], cfg: Config
++) -> TrajectoryResult:
++    """Aggregate window results into a final trajectory result."""
++    # Sort by window index to ensure consistent processing
++    window_results.sort(key=lambda x: x[0])
++    replies = [reply for _, reply in window_results]
++
++    try:
++        verdicts = [parse_reply(reply) for reply in replies]
++    except (MonitorParseError, MonitorUnavailable) as exc:
++        # Propagate the first error encountered
++        raise exc
++
++    worst = max(verdicts, key=lambda v: v.score)
++    return TrajectoryResult(
++        snapshot_id=traj.snapshot_id,
++        episode_id=traj.episode_id,
++        deployment=traj.deployment,
++        agent_model=traj.agent_model,
++        score=normalise(worst.score),
++        raw_score=worst.score,
++        window_scores=[v.score for v in verdicts],
++        rationale=worst.rationale,
++    )
++
++
+ def main(argv: list[str] | None = None) -> int:
+     parser = argparse.ArgumentParser()
+     parser.add_argument("--config", default="config/monitor.toml")
+diff --git a/cotmon/scoring.py b/cotmon/scoring.py
+index 6eed82b..f0a1b3c 100644
+--- a/cotmon/scoring.py
++++ b/cotmon/scoring.py
+@@ -23,6 +23,8 @@ def load_prompt(version: str) -> str:
+     return resources.files("cotmon.prompts").joinpath(f"scheming_{version}.txt").read_text()
+ 
+ 
++WindowRequest = MonitorRequest  # Type alias for clarity
++
+ def build_request(
+     cfg: Config, system_prompt: str, traj: Trajectory, window: list[Message], position: str
+ ) -> MonitorRequest:
+@@ -57,36 +59,6 @@ def build_request(
+     )
+ 
+ 
+-def normalise(raw: int) -> float:
+-    """Map a monitor score from the 1-10 scale onto [0, 1]."""
+-    return (raw - MIN_SCORE) / (MAX_SCORE - MIN_SCORE)
+-
+-
+-def score_trajectory(traj: Trajectory, client, cfg: Config, system_prompt: str) -> TrajectoryResult:
+-    """Score one trajectory, window by window.
+-
+-    Raises ``MonitorParseError`` or ``MonitorUnavailable`` if any window fails;
+-    the caller records those as monitor errors.
+-    """
+-    windows = split_windows(traj.messages, cfg.transcript.window_messages, cfg.transcript.window_overlap)
+-    requests = [
+-        build_request(cfg, system_prompt, traj, window, f"window {i + 1} of {len(windows)}")
+-        for i, window in enumerate(windows)
+-    ]
+-    with ThreadPoolExecutor(max_workers=min(cfg.monitor.max_workers, len(requests))) as pool:
+-        replies = list(pool.map(client.complete, requests))
+-    verdicts = [parse_reply(reply) for reply in replies]
+-    worst = max(verdicts, key=lambda v: v.score)
+-    return TrajectoryResult(
+-        snapshot_id=traj.snapshot_id,
+-        episode_id=traj.episode_id,
+-        deployment=traj.deployment,
+-        agent_model=traj.agent_model,
+-        score=normalise(worst.score),
+-        raw_score=worst.score,
+-        window_scores=[v.score for v in verdicts],
+-        rationale=worst.rationale,
+-    )
+-
+-
+ def decide(score: float, cfg: Config) -> str:
+     if score >= cfg.alerts.page_threshold:
+         return "page"

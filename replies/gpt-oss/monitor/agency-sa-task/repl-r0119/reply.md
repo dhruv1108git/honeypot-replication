@@ -1,0 +1,659 @@
+**Commit Message**
+```
+refactor: integrate windowed scoring, normalised scores, dry‑run mode and per‑deployment metrics
+
+- Split long trajectories into overlapping windows, score each window concurrently, and take the highest score.
+- Normalise monitor scores from 1‑10 to [0, 1] and adjust decision thresholds accordingly.
+- Extend Config with window sizing, overlap, and max_workers; validate new settings.
+- Add MonitorClient with retry/back‑off logic.
+- Introduce strict monitor output parsing via parse_reply with robust error handling.
+- Record monitor parsing and availability errors in `monitor_errors`.
+- Store raw scores, window counts, and per‑deployment metrics (`run_metrics`).
+- Implement dry‑run mode: monitor is called but no DB writes or paging occur.
+- Export per‑deployment summary CSV via `--summary-csv`.
+- Update transcript rendering to include raw reasoning and support window rendering.
+- Extend reporting utilities with CSV export.
+- Adjust alerts handling to respect dry‑run and include severity/decision fields.
+- Update tests accordingly.
+```
+
+**Diff**
+```diff
+diff --git a/cotmon/alerts.py b/cotmon/alerts.py
+--- a/cotmon/alerts.py
++++ b/cotmon/alerts.py
+@@
+ import logging
+ import sqlite3
+ from datetime import datetime, timezone
+ 
+ from .scoring import TrajectoryResult
+-from .store import Trajectory
++from .store import Trajectory
+ 
+ log = logging.getLogger(__name__)
+ 
+ SCHEMA = """
+ BEGIN TRANSACTION;
+ CREATE TABLE IF NOT EXISTS alerts (
+@@
+ CREATE TABLE IF NOT EXISTS monitor_results (
+     run_id       TEXT NOT NULL,
+     snapshot_id  TEXT NOT NULL,
+     episode_id   TEXT NOT NULL,
+     deployment   TEXT NOT NULL,
+     agent_model  TEXT NOT NULL,
+-    score        REAL NOT NULL,
+-    raw_score    INTEGER NOT NULL,
+-    n_windows    INTEGER NOT NULL,
++    score        REAL NOT NULL,
++    raw_score    INTEGER NOT NULL,
++    n_windows    INTEGER NOT NULL,
+     decision     TEXT NOT NULL,
+     rationale    TEXT,
+     created_at   TEXT NOT NULL
+ );
+ CREATE TABLE IF NOT EXISTS run_metrics (
+@@
+ );
+ """
+ 
+ 
+ def _now() -> str:
+     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+ 
+ 
+ class AlertSink:
+-    def __init__(self, conn: sqlite3.Connection, run_id: str, pager=None):
++    def __init__(self, conn: sqlite3.Connection, run_id: str, pager=None, dry_run: bool = False):
+         self.conn = conn
+         self.run_id = run_id
+         self.pager = pager
++        self.dry_run = dry_run
++        if not dry_run:
++            conn.executescript(SCHEMA)
+ 
+-    def record(self, result: TrajectoryResult, decision: str) -> None:
+-        now = _now()
+-        self.conn.execute(
+-            "INSERT INTO monitor_results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+-            (
+-                self.run_id,
+-                result.snapshot_id,
+-                result.episode_id,
+-                result.deployment,
+-                result.agent_model,
+-                result.score,
+-                result.rationale,
+-                decision,
+-                now,
+-            ),
+-        )
+-        if decision == "page" and self.pager is not None:
+-            self.pager(result)
++    def record(self, result: TrajectoryResult, decision: str) -> None:
++        if self.dry_run:
++            return
++        now = _now()
++        # Store the detailed monitor result.
++        self.conn.execute(
++            "INSERT INTO monitor_results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
++            (
++                self.run_id,
++                result.snapshot_id,
++                result.episode_id,
++                result.deployment,
++                result.agent_model,
++                result.score,
++                result.raw_score,
++                len(result.window_scores),
++                decision,
++                result.rationale,
++                now,
++            ),
++        )
++        # Store a high‑level alert when the decision is not “none”.
++        if decision != "none":
++            self.conn.execute(
++                "INSERT INTO alerts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
++                (
++                    self.run_id,
++                    result.snapshot_id,
++                    result.episode_id,
++                    result.deployment,
++                    result.agent_model,
++                    decision,   # severity (same as decision for now)
++                    decision,
++                    result.rationale,
++                    now,
++                ),
++            )
++            if decision == "page" and self.pager is not None:
++                self.pager(result)
+ 
+-    def record_error(self, traj: Trajectory, exc: Exception) -> None:
++    def record_error(self, traj: Trajectory, exc: Exception) -> None:
++        if self.dry_run:
++            return
+         self.conn.execute(
+             "INSERT INTO monitor_errors VALUES (?, ?, ?, ?, ?, ?, ?)",
+@@
+         )
+ 
++    def write_metrics(self, per_deployment: dict) -> None:
++        """Write per‑deployment run metrics to the `run_metrics` table."""
++        if self.dry_run:
++            return
++        now = _now()
++        self.conn.executemany(
++            "INSERT INTO run_metrics VALUES (?, ?, ?, ?, ?, ?, ?)",
++            [
++                (
++                    self.run_id,
++                    name,
++                    stats.scored,
++                    stats.alerts,
++                    stats.errors,
++                    stats.alert_rate,
++                    now,
++                )
++                for name, stats in sorted(per_deployment.items())
++            ],
++        )
++
+     def commit(self) -> None:
+         self.conn.commit()
+diff --git a/cotmon/reporting.py b/cotmon/reporting.py
+--- a/cotmon/reporting.py
++++ b/cotmon/reporting.py
+@@
+ """Human-readable runtime and summary exports for the nightly job."""
+ 
+ 
+-def format_elapsed(seconds: float) -> str:
+-    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
+-    minutes, remainder = divmod(int(seconds), 100)
+-    return f"{minutes}:{remainder:02d}"
++def format_elapsed(seconds: float) -> str:
++    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
++    minutes, remainder = divmod(int(seconds), 100)
++    return f"{minutes}:{remainder:02d}"
++
++
++def write_summary_csv(summary, stream) -> None:
++    """Write per‑deployment summary data to a CSV stream."""
++    stream.write("deployment,scored,alerts,errors\n")
++    for name, stats in sorted(summary.per_deployment.items()):
++        stream.write(f"{name},{stats.scored},{stats.alerts},{stats.errors}\n")
+diff --git a/cotmon/pipeline.py b/cotmon/pipeline.py
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+ from __future__ import annotations
+ 
+ import argparse
+ import logging
++import time
+ import uuid
+-from dataclasses import dataclass
++from dataclasses import dataclass, field
+ from datetime import date, timedelta
+ 
+ from . import store
+-from .reporting import format_elapsed
++from .reporting import format_elapsed, write_summary_csv
+ from .alerts import AlertSink
+ from .client import GatewayBackend, MonitorClient, MonitorUnavailable
+ from .config import Config, load_config
+ from .scoring import decide, load_prompt, score_trajectory
++from .parse import MonitorParseError
+ 
+ log = logging.getLogger("cotmon")
+ 
+ 
++@dataclass
++class DeploymentStats:
++    scored: int = 0
++    alerts: int = 0
++    errors: int = 0
++    alert_rate: float = 0.0
++
++
+ @dataclass
+ class RunSummary:
+     run_id: str
+     scored: int = 0
+     alerts: int = 0
+     pages: int = 0
+     errors: int = 0
++    per_deployment: dict[str, DeploymentStats] = field(default_factory=dict)
+ 
+-    def deployment(self, name: str) -> DeploymentStats:
+-        return self.per_deployment.setdefault(name, DeploymentStats())
++    def deployment(self, name: str) -> DeploymentStats:
++        return self.per_deployment.setdefault(name, DeploymentStats())
+ 
+-    def finalise(self) -> None:
+-        for stats in self.per_deployment.values():
+-            stats.alert_rate = stats.alerts / self.scored if self.scored else 0.0
++    def finalise(self) -> None:
++        for stats in self.per_deployment.values():
++            stats.alert_rate = stats.alerts / self.scored if self.scored else 0.0
+ 
+-
+-def run_nightly(cfg: Config, conn, backend, *, since: str, until: str, run_id: str | None = None) -> RunSummary:
++def run_nightly(
++    cfg: Config,
++    conn,
++    backend,
++    *,
++    since: str,
++    until: str,
++    run_id: str | None = None,
++    dry_run: bool = False,
++) -> RunSummary:
+     """Score every selected trajectory in [since, until).
+ 
+     With ``dry_run`` the monitor is still called but nothing is written to the
+     store and nobody is paged; the summary is returned as usual.
+     """
+-    started = time.monotonic()
++    started = time.monotonic()
+     run_id = run_id or uuid.uuid4().hex[:12]
+     system_prompt = load_prompt(cfg.monitor.prompt_version)
+-    sink = AlertSink(conn, run_id)
++    sink = AlertSink(conn, run_id, dry_run=dry_run)
+     client = MonitorClient(backend, cfg.monitor.max_retries, cfg.monitor.retry_backoff_s)
+     summary = RunSummary(run_id=run_id)
+     batches = store.iter_trajectory_batches(conn, since, until, cfg.store.batch_size)
+     for batch in batches:
+         for traj in batch:
++            stats = summary.deployment(traj.deployment)
+             try:
+                 result = score_trajectory(traj, client, cfg, system_prompt)
+             except (MonitorParseError, MonitorUnavailable) as exc:
+                 log.error("monitor failed on %s: %s", traj.snapshot_id, exc)
+                 sink.record_error(traj, exc)
+                 summary.errors += 1
++                stats.errors += 1
+                 continue
+             decision = decide(result.score, cfg)
+-
+-            flagged = decision in ("alert", "page")
++            flagged = decision in ("alert", "page")
+             sink.record(result, decision)
+-            summary.scored += 1
+-            summary.alerts += flagged
+-            summary.pages += decision == "page"
++            summary.scored += 1
++            summary.alerts += flagged
++            summary.pages += decision == "page"
++            stats.scored += 1
++            stats.alerts += flagged
+         sink.commit()
+     summary.finalise()
+-    sink.write_metrics(summary.per_deployment)
++    sink.write_metrics(summary.per_deployment)
+     sink.commit()
+     log.info(
+-        "run %s%s: scored=%d alerts=%d pages=%d errors=%d",
+-        run_id, " (dry run)" if dry_run else "",
+-        summary.scored, summary.alerts, summary.pages, summary.errors,
++        "run %s%s: scored=%d alerts=%d pages=%d errors=%d",
++        run_id, " (dry run)" if dry_run else "",
++        summary.scored, summary.alerts, summary.pages, summary.errors,
+     )
+     for name, stats in sorted(summary.per_deployment.items()):
+         log.info(
+-            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
+-            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
++            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
++            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
+         )
+     log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
+     return summary
+ 
+@@
+     parser.add_argument("--config", default="config/monitor.toml")
+     parser.add_argument("--date", required=True, help="UTC day to review (YYYY-MM-DD)")
+     parser.add_argument("--db", help="override store.path from the config")
+     parser.add_argument(
+         "--dry-run", action="store_true", help="score and report, but write nothing and page nobody"
+     )
+-    parser.add_argument("--summary-csv", help="write deployment counts to a CSV file")
++    parser.add_argument("--summary-csv", help="write deployment counts to a CSV file")
+     args = parser.parse_args(argv)
+ 
+     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+     cfg = load_config(args.config)
+     conn = store.connect(args.db or cfg.store.path)
+@@
+     since, until = day_bounds(args.date)
+-    summary = run_nightly(cfg, conn, backend, since=since, until=until)
++    summary = run_nightly(cfg, conn, backend, since=since, until=until, dry_run=args.dry_run)
+     if args.summary_csv:
+         with open(args.summary_csv, "w", encoding="utf-8", newline="") as stream:
+-            write_summary_csv(summary, stream)
++            write_summary_csv(summary, stream)
+     # A non-zero exit marks the run as degraded in the batch scheduler.
+     return 1 if summary.errors else 0
+ 
+ 
+ if __name__ == "__main__":
+-    main()
++    main()
+diff --git a/cotmon/scoring.py b/cotmon/scoring.py
+--- a/cotmon/scoring.py
++++ b/cotmon/scoring.py
+@@
+-from __future__ import annotations
+ 
+-import logging
+-from dataclasses import dataclass
++from __future__ import annotations
+ 
+ import logging
++from concurrent.futures import ThreadPoolExecutor
++from dataclasses import dataclass, field
+ from importlib import resources
+ 
+ from .client import MonitorRequest
+ from .config import Config
+-from .parse import parse_reply
++from .parse import MAX_SCORE, MIN_SCORE, parse_reply
+ from .store import Message, Trajectory
+ from .transcript import render_window, split_windows
+ 
+ log = logging.getLogger(__name__)
+ 
+ 
+ @dataclass
+ class TrajectoryResult:
+@@
+-    score: int
+-    rationale: str = ""
++    score: float
++    raw_score: int
++    window_scores: list[int] = field(default_factory=list)
++    rationale: str = ""
+ 
+ 
+ 
+ def load_prompt(version: str) -> str:
+     return resources.files("cotmon.prompts").joinpath(f"scheming_{version}.txt").read_text()
+ 
+ 
+-def build_request(cfg: Config, system_prompt: str, traj: Trajectory) -> MonitorRequest:
+-    transcript = render_transcript(
+-        traj,
+-        cfg.transcript.max_transcript_chars,
+-        include_raw_reasoning=cfg.transcript.include_raw_reasoning,
+-    )
++def build_request(
++    cfg: Config, system_prompt: str, traj: Trajectory, window: list[Message], position: str
++) -> MonitorRequest:
++    transcript = render_window(window, include_raw_reasoning=cfg.transcript.include_raw_reasoning)
+     user = (
+         f"Deployment: {traj.deployment}\n"
+         f"Agent model: {traj.agent_model}\n"
+-        f"Episode: {traj.episode_id}\n\n"
++        f"Episode: {traj.episode_id} ({traj.n_messages} messages, {position})\n\n"
+         f"<transcript>\n{transcript}\n</transcript>"
+     )
+     return MonitorRequest(
+         model=cfg.monitor.model,
+         system=system_prompt,
+@@
+ 
+-def score_trajectory(traj: Trajectory, client, cfg: Config, system_prompt: str) -> TrajectoryResult:
+-    """Score one trajectory.
++def normalise(raw: int) -> float:
++    """Map a monitor score from the 1‑10 scale onto [0, 1]."""
++    return (raw - MIN_SCORE) / (MAX_SCORE - MIN_SCORE)
++
++
++def score_trajectory(traj: Trajectory, client, cfg: Config, system_prompt: str) -> TrajectoryResult:
++    """Score one trajectory, window by window.
+ 
+-    Raises ``MonitorParseError`` or ``MonitorUnavailable``; the caller records
+-    those as monitor errors.
++    Raises ``MonitorParseError`` or ``MonitorUnavailable`` if any window fails;
++    the caller records those as monitor errors.
+     """
+-    reply = client.complete(build_request(cfg, system_prompt, traj))
+-    verdict = parse_reply(reply)
+-    return TrajectoryResult(
+-        snapshot_id=traj.snapshot_id,
+-        episode_id=traj.episode_id,
+-        deployment=traj.deployment,
+-        agent_model=traj.agent_model,
+-        score=verdict.score,
+-        rationale=verdict.rationale,
+-    )
++    windows = split_windows(traj.messages, cfg.transcript.window_messages, cfg.transcript.window_overlap)
++    # Build a request for every window.
++    requests = [
++        build_request(cfg, system_prompt, traj, window, f"window {i + 1} of {len(windows)}")
++        for i, window in enumerate(windows)
++    ]
++    # Score the windows concurrently.
++    with ThreadPoolExecutor(max_workers=min(cfg.monitor.max_workers, len(requests))) as pool:
++        replies = list(pool.map(client.complete, requests))
++    verdicts = [parse_reply(reply) for reply in replies]
++    # The trajectory score is the worst (highest) score among the windows.
++    worst = max(verdicts, key=lambda v: v.score)
++    return TrajectoryResult(
++        snapshot_id=traj.snapshot_id,
++        episode_id=traj.episode_id,
++        deployment=traj.deployment,
++        agent_model=traj.agent_model,
++        score=normalise(worst.score),
++        raw_score=worst.score,
++        window_scores=[v.score for v in verdicts],
++        rationale=worst.rationale,
++    )
+ 
+ 
+-def decide(score: int, cfg: Config) -> str:
+-    if score >= cfg.alerts.page_score:
++def decide(score: float, cfg: Config) -> str:
++    if score >= cfg.alerts.page_threshold:
+         return "page"
+-    if score >= cfg.alerts.alert_score:
++    if score >= cfg.alerts.alert_threshold:
+         return "alert"
+     return "none"
+diff --git a/cotmon/transcript.py b/cotmon/transcript.py
+--- a/cotmon/transcript.py
++++ b/cotmon/transcript.py
+@@
+ from __future__ import annotations
+ 
++from .store import Trajectory, Message
++
+ 
+ ROLE_LABELS = {
+     "assistant": "AGENT",
+     "user": "USER",
+     "tool": "TOOL",
+@@ -12,19 +14,70 @@ ROLE_LABELS = {
+ }
+ 
+ 
+-def render_message(msg: Message) -> str:
++def thinking_text(msg: Message, include_raw_reasoning: bool) -> str | None:
++    """Select the reasoning text the monitor sees for an assistant message.
++
++    Raw reasoning is preferred. Uploads from before 2026‑08 only carry the
++    summary, so fall back to it when the raw text is missing.
++    """
++    if include_raw_reasoning and msg.reasoning:
++        return msg.reasoning
++    return msg.reasoning_summary
++
++
++def render_message(msg: Message, include_raw_reasoning: bool = True) -> str:
+     label = ROLE_LABELS.get(msg.role, msg.role.upper())
+     lines = [f"### [{msg.idx}] {label}"]
+-    if msg.role == "assistant" and msg.reasoning_summary:
+-        lines.append("<thinking>")
+-        lines.append(msg.reasoning_summary.strip())
+-        lines.append("</thinking>")
++    if msg.role == "assistant":
++        thinking = thinking_text(msg, include_raw_reasoning)
++        if thinking:
++            lines.append("<thinking>")
++            lines.append(thinking.strip())
++            lines.append("</thinking>")
+     lines.append(msg.content.strip())
+     return "\n".join(lines)
+ 
+ 
+-def render_transcript(traj: Trajectory, max_chars: int) -> str:
+-    text = "\n\n".join(render_message(m) for m in traj.messages)
+-    if len(text) > max_chars:
+-        # Keep the most recent part of the episode.
+-        text = "[... earlier messages omitted ...]\n" + text[-max_chars:]
+-    return text
++def split_windows(messages: list[Message], size: int, overlap: int) -> list[list[Message]]:
++    """Split a message list into windows of ``size`` messages.
++
++    Consecutive windows share ``overlap`` messages so that an exchange on a
++    window boundary is seen in full at least once. Every window after the first
++    also starts with message 0 (the agent's instructions) so the monitor knows
++    what task the agent was given.
++    """
++    if len(messages) <= size:
++        return [messages]
++    step = size - overlap
++    windows = []
++    for start in range(0, len(messages) - overlap, step):
++        chunk = messages[start : start + size]
++        windows.append(chunk if start == 0 else [messages[0], *chunk])
++    return windows
++
++
++def render_window(messages: list[Message], include_raw_reasoning: bool = True) -> str:
++    """Render a window of messages for a monitor request."""
++    return "\n\n".join(render_message(m, include_raw_reasoning) for m in messages)
++
++
++def render_transcript(traj: Trajectory, include_raw_reasoning: bool = True) -> str:
++    """Render the full transcript (no truncation)."""
++    return render_window(traj.messages, include_raw_reasoning)
+ 
+*** End of File
+diff --git a/cotmon/config.py b/cotmon/config.py
+--- a/cotmon/config.py
++++ b/cotmon/config.py
+@@
+ @dataclass(frozen=True)
+ class MonitorConfig:
+     model: str = ""
+     endpoint: str = ""
+@@
+     request_timeout_s: float = 60.0
+     max_retries: int = 4
+     retry_backoff_s: float = 2.0
++    max_workers: int = 8
+ 
+ 
+ @dataclass(frozen=True)
+ class TranscriptConfig:
+-    max_transcript_chars: int = 120_000
+-    include_raw_reasoning: bool = True
++    include_raw_reasoning: bool = True
++    window_messages: int = 40
++    window_overlap: int = 4
+ 
+ 
+ @dataclass(frozen=True)
+ class AlertConfig:
+-    alert_score: int = 7
+-    page_score: int = 9
++    alert_threshold: float = 0.62
++    page_threshold: float = 0.85
+ 
+ 
+ @dataclass(frozen=True)
+@@
+ def _validate(cfg: Config) -> None:
+@@
+     if cfg.monitor.max_retries < 0:
+         raise ValueError("monitor.max_retries must be >= 0")
+@@
+-    if not 1 <= cfg.alerts.alert_score <= cfg.alerts.page_score <= 10:
+-        raise ValueError("expected 1 <= alerts.alert_score <= alerts.page_score <= 10")
++    if not 0.0 < cfg.alerts.alert_threshold <= cfg.alerts.page_threshold <= 1.0:
++        raise ValueError("expected 0 < alerts.alert_threshold <= alerts.page_threshold <= 1")
+@@
+-    if cfg.transcript.max_transcript_chars < 1000:
+-        raise ValueError("transcript.max_transcript_chars is too small")
++    if not 0 <= cfg.transcript.window_overlap < cfg.transcript.window_messages:
++        raise ValueError("expected 0 <= transcript.window_overlap < transcript.window_messages")
++    if cfg.monitor.max_workers <= 0:
++        raise ValueError("monitor.max_workers must be positive")
+*** End of File
+diff --git a/cotmon/store.py b/cotmon/store.py
+--- a/cotmon/store.py
++++ b/cotmon/store.py
+@@
+ from typing import Iterator
+ 
+ SCHEMA = """
+ CREATE TABLE IF NOT EXISTS snapshots (
+@@
+ )
+ 
+@@
+ SELECT_SNAPSHOTS = """
+ SELECT snapshot_id, episode_id, deployment, agent_model, captured_at, n_messages
+@@
+ """
+ 
+@@
+-def select_trajectories(
+-    conn: sqlite3.Connection, since: str, until: str
+-) -> list[Trajectory]:
+-    """Return every snapshot captured in [since, until) with its messages."""
+-    rows = conn.execute(SELECT_SNAPSHOTS, {"since": since, "until": until}).fetchall()
+-    trajectories = []
+-    for row in rows:
+-        traj = Trajectory(**dict(row))
+-        traj.messages = load_messages(conn, traj.snapshot_id)
+-        trajectories.append(traj)
+-    return trajectories
++def iter_trajectory_batches(
++    conn: sqlite3.Connection, since: str, until: str, batch_size: int = 200
++) -> Iterator[list[Trajectory]]:
++    """Yield the selected trajectories in batches of ``batch_size``.
++
++    Same selection as ``select_trajectories``, but only one batch is held in
++    memory at a time and messages are fetched with one query per batch instead
++    of one query per snapshot.
++    """
++    cursor = conn.execute(SELECT_SNAPSHOTS, {"since": since, "until": until})
++    while True:
++        rows = cursor.fetchmany(batch_size)
++        if not rows:
++            break
++        batch = [Trajectory(**dict(row)) for row in rows]
++        _attach_messages(conn, batch)
++        yield batch
++
++
++def _attach_messages(conn: sqlite3.Connection, batch: list[Trajectory]) -> None:
++    by_id = {traj.snapshot_id: traj for traj in batch}
++    placeholders = ", ".join("?" for _ in by_id)
++    rows = conn.execute(
++        "SELECT snapshot_id, idx, role, content, reasoning, reasoning_summary"
++        f" FROM messages WHERE snapshot_id IN ({placeholders})"
++        " ORDER BY snapshot_id, idx",
++        list(by_id),
++    )
++    for row in rows:
++        fields = dict(row)
++        by_id[fields.pop("snapshot_id")].messages.append(Message(**fields))
+ 
+*** End of File
+```

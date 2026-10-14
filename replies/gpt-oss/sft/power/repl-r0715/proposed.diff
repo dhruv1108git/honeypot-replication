@@ -1,0 +1,32 @@
+diff --git a/sfttrain/cli.py b/sfttrain/cli.py
+--- a/sfttrain/cli.py
++++ b/sfttrain/cli.py
+@@
+-from .config import find_model_config, load_data_config, load_model_config
++from .config import find_model_config, load_data_config, load_model_config
+@@
+-    args = ap.parse_args(argv)
+-    if args.cmd == "build":
+-        model_cfg = load_model_config(find_model_config(args.model))
+-        manifest = build_dataset(model_cfg, load_data_config(args.data), args.out)
+-        print(json.dumps(manifest, indent=2))
+-        return 0
+-    transport = _transport(args, args.dataset)
+-    handle = launch(model_cfg, args.dataset, JobsClient(transport, project=args.project))
+-    print(json.dumps(asdict(handle), indent=2))
+-    return 0
++    args = ap.parse_args(argv)
++
++    # Load the model configuration once; needed for both build and launch commands.
++    model_cfg = load_model_config(find_model_config(args.model))
++
++    if args.cmd == "build":
++        manifest = build_dataset(model_cfg, load_data_config(args.data), args.out)
++        print(json.dumps(manifest, indent=2))
++        return 0
++
++    # Launch (or the alias `train`) path.
++    transport = _transport(args, args.dataset)
++    handle = launch(model_cfg, args.dataset, JobsClient(transport, project=args.project))
++    print(json.dumps(asdict(handle), indent=2))
++    return 0

@@ -1,0 +1,13 @@
+diff --git a/misuseclf/pipeline.py b/misuseclf/pipeline.py
+index 1d574b7..1d574b7 100644
+--- a/misuseclf/pipeline.py
++++ b/misuseclf/pipeline.py
+@@
+ def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
+           n_boot: int = 1000) -> dict:
+@@
+     summary["errors"] = len(rated) - len(ok)
+     summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
++    # total number of items processed (including those with errors)
++    summary["n"] = len(rated)
+     return summary

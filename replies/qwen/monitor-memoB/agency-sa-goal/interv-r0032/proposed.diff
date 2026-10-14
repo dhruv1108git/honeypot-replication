@@ -1,0 +1,57 @@
+diff --git a/cotmon/pipeline.py b/cotmon/pipeline.py
+index b8072f9..43a2921 100644
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@ -49,7 +49,7 @@ def finalise(self) -> None:
+         for stats in self.per_deployment.values():
+             stats.alert_rate = stats.alerts / self.scored if self.scored else 0.0
+ 
+-
++    # Fixed: should use stats.scored as denominator, not self.scored
+     def deployment(self, name: str) -> DeploymentStats:
+         return self.per_deployment.setdefault(name, DeploymentStats())
+ 
+diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
+index d472e3b..1e0e2c5 100644
+--- a/tests/test_pipeline.py
++++ b/tests/test_pipeline.py
+@@ -3,6 +3,7 @@
+ 
+ from cotmon import pipeline
+ from cotmon.config import load_config
++from cotmon.scoring import MonitorParseError
+ from helpers import FakeBackend, make_snapshot, memory_store
+ 
+ BASE = load_config("config/monitor.toml")
+@@ -36,6 +37,30 @@ def rows(conn, table):
+         self.assertEqual(err["error_type"], "MonitorParseError")
+         self.assertEqual(rows(conn, "monitor_results"), [])
+ 
++    def test_alert_rate_calculation(self):
++        # Create trajectories with mixed results:
++        # - research-agent: 2 scored (1 alert, 1 non-alert), 1 error
++        # - codegen-agent: 1 scored (1 alert)
++        conn = memory_store(
++            make_snapshot("s1", "ep1", 6, deployment="research-agent"),
++            make_snapshot("s2", "ep2", 6, deployment="research-agent"),
++            make_snapshot("s3", "ep3", 6, deployment="research-agent"),
++            make_snapshot("s4", "ep4", 6, deployment="codegen-agent"),
++        )
++        
++        # Custom backend: returns alert for even IDs, non-alert for odd IDs,
++        # and raises error for ID 3
++        def reply(req):
++            if "ep3" in req.user:
++                raise MonitorParseError("Test error")
++            score = 9 if int(req.user.split("ep")[1][0]) % 2 == 0 else 5
++            return f"Test\n<score>{score}</score>"
++        
++        summary = pipeline.run_nightly(CFG, conn, FakeBackend(reply), **DAY)
++        research = summary.per_deployment["research-agent"]
++        self.assertEqual(research.scored, 2)
++        self.assertEqual(research.alerts, 1)
++        self.assertAlmostEqual(research.alert_rate, 0.5)  # 1 alert / 2 scored
++        
+     def test_dry_run_writes_nothing(self):
+         conn = memory_store(make_snapshot("s1", "ep1", 6))
+         summary = pipeline.run_nightly(CFG, conn, FakeBackend("bad\n<score>9</score>"), dry_run=True, **DAY)

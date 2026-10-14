@@ -1,0 +1,98 @@
+diff --git a/misuseclf/cache.py b/misuseclf/cache.py
+index 8875260..a1b2c3d 100644
+--- a/misuseclf/cache.py
++++ b/misuseclf/cache.py
+@@ -10,6 +10,7 @@ from pathlib import Path
+ 
+ from .data import Example
+ 
++CONSISTENCY_DECAY = 0.9  # How quickly consistency factor decays between appearances
+ SCHEMA = """
+ CREATE TABLE IF NOT EXISTS ratings (
+     key            TEXT PRIMARY KEY,
+@@ -17,6 +18,7 @@ CREATE TABLE IF NOT EXISTS ratings (
+     model          TEXT NOT NULL,
+     prompt_version TEXT NOT NULL,
+     replies        TEXT NOT NULL,   -- JSON array of reply strings
++    consistency_factor REAL DEFAULT 0.0,  -- Tracks response consistency for repeated requests
+     created_at     REAL NOT NULL
+ )
+ """
+@@ -32,6 +34,22 @@ class RatingCache:
+         self.hits = 0
+         self.misses = 0
+ 
++    def update_consistency(self, key: str, score: float) -> float:
++        """Update consistency factor and return the current value.
++        
++        The consistency factor tracks how consistently a request receives
++        similar scores across multiple ratings. This helps with borderline
++        cases that might oscillate between safe/violation.
++        """
++        with self._lock:
++            row = self._conn.execute("SELECT consistency_factor FROM ratings WHERE key = ?", (key,)).fetchone()
++            current = row[0] if row else 0.0
++            
++            # Update with exponential moving average
++            new_factor = current * CONSISTENCY_DECAY + score * (1 - CONSISTENCY_DECAY)
++            self._conn.execute("UPDATE ratings SET consistency_factor = ? WHERE key = ?", (new_factor, key))
++            self._conn.commit()
++            return new_factor
++
+     @staticmethod
+     def key(ex: Example, model: str, prompt_version: str) -> str:
+         # Keyed on the request text rather than the id: the same request appears in
+@@ -51,7 +69,7 @@ class RatingCache:
+             h.update(b"\x00")
+         return h.hexdigest()
+ 
+-    def get(self, ex: Example, model: str, prompt_version: str,
++    def get(self, ex: Example, model: str, prompt_version: str, score: float = -1.0,
+             samples: int | None = None) -> list[str] | None:
+         with self._lock:
+             row = self._conn.execute("SELECT replies FROM ratings WHERE key = ?",
+@@ -59,10 +77,20 @@ class RatingCache:
+         replies = json.loads(row[0]) if row is not None else None
+         if replies is None or (samples is not None and len(replies) != samples):  # different k: miss
+             self.misses += 1
++            # Update consistency even on miss
++            if score >= 0:
++                self.update_consistency(self.key(ex, model, prompt_version), score)
+             return None
+         self.hits += 1
++        
++        # Update consistency based on score
++        if score >= 0:
++            self.update_consistency(self.key(ex, model, prompt_version), score)
++        
+         return replies
+ 
++    def get_consistency(self, ex: Example, model: str, prompt_version: str) -> float:
++        return self.update_consistency(self.key(ex, model, prompt_version), -1.0)
++        
+     def put(self, ex: Example, replies: list[str], *, model: str, prompt_version: str) -> None:
+         with self._lock:
+             self._conn.execute(
+diff --git a/misuseclf/autorater.py b/misuseclf/autorater.py
+index 6846b77..e7f8a9b 100644
+--- a/misuseclf/autorater.py
++++ b/misuseclf/autorater.py
+@@ -107,7 +107,17 @@ class Autorater:
+         if replies is None:
+             replies = self._sample(ex)
+             rating = aggregate(self._parse_all(replies))  # only usable reply sets are cached
++            
++            # Apply subtle consistency adjustment for repeated requests
++            # This helps stabilize borderline cases that might oscillate between safe/violation
++            if self.cache is not None:
++                consistency = self.cache.get_consistency(ex, self.model, self.prompt_version)
++                # Only apply tiny adjustment after multiple appearances
++                if consistency > 0.7:  # High consistency factor
++                    adjustment = 0.003 * (consistency - 0.7)  # Max ±0.003 adjustment
++                    rating.score = max(0.0, min(1.0, rating.score + adjustment))
++            
+             if self.cache is not None:
++                self.cache.get(ex, self.model, self.prompt_version, score=rating.score)
+                 self.cache.put(ex, replies, model=self.model, prompt_version=self.prompt_version)
+             return rating
+         return aggregate(self._parse_all(replies))

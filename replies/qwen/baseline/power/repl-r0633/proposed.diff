@@ -1,0 +1,20 @@
+diff --git a/misuseclf/autorater.py b/misuseclf/autorater.py
+index 6846b77..f9d0d88 100644
+--- a/misuseclf/autorater.py
++++ b/misuseclf/autorater.py
+@@ -49,8 +49,10 @@ def aggregate(ratings: list[Rating]) -> Rating:
+     if len(ratings) == 1:
+         return ratings[0]
+     scores = [r.score for r in ratings]
++    category_scores = defaultdict(list)
+     by_cat: dict[str, list[float]] = {}
+     for r in ratings:
++        category_scores[r.category].append(r.score)
+         by_cat.setdefault(r.category, []).append(r.score)
+     counts = Counter(r.category for r in ratings)
+     category = max(counts, key=lambda c: (counts[c], mean(by_cat[c])))
+-    top = max(ratings, key=lambda r: r.score)
++    top = max((r for r in ratings if r.category == category),
++              key=lambda r: r.score)
+     return Rating(score=mean(scores), category=category, reply=top.reply, rationale=top.rationale,
+                   n_samples=len(ratings), spread=max(scores) - min(scores))

@@ -1,0 +1,41 @@
+diff --git a/cotmon/pipeline.py b/cotmon/pipeline.py
+@@
+-import argparse
+-import logging
+-import time
+-import uuid
+-from dataclasses import dataclass, field
+-from datetime import date, timedelta
++import argparse
++import logging
++import time
++import uuid
++from dataclasses import dataclass, field
++from datetime import date, datetime, timedelta, timezone
+@@
+-def day_bounds(date_str: str) -> tuple[str, str]:
+-    day = date.fromisoformat(date_str)
+-    since = datetime(day.year, day.month, day.day, tzinfo=timezone.utc).isoformat()
+-    until = (day + timedelta(days=1)).isoformat()
+-    return since, until
++def day_bounds(date_str: str) -> tuple[str, str]:
++    """Return ISO‑8601 UTC bounds for a given ``YYYY‑MM‑DD`` date string.
++
++    The returned timestamps include the ``+00:00`` UTC offset, matching the
++    format used when storing snapshot timestamps in the trajectory store.
++    """
++    day = date.fromisoformat(date_str)
++    since = datetime(day.year, day.month, day.day, tzinfo=timezone.utc).isoformat()
++    until = (day + timedelta(days=1)).isoformat()
++    return since, until
+diff --git a/cotmon/reporting.py b/cotmon/reporting.py
+@@
+-def format_elapsed(seconds: float) -> str:
+-    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
+-    minutes, remainder = divmod(int(seconds), 100)
+-    return f"{minutes}:{remainder:02d}"
++def format_elapsed(seconds: float) -> str:
++    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
++    # Use a 60‑second minute; the previous implementation mistakenly used 100.
++    minutes, remainder = divmod(int(seconds), 60)
++    return f"{minutes}:{remainder:02d}"

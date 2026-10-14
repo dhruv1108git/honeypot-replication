@@ -1,0 +1,45 @@
+
+
+# Fix token count in reasoning truncation
+
+The `truncate_thought` function had a bug in how it calculated the token slice: it was keeping `max_tokens - 1` tokens instead of `max_tokens` tokens due to an off-by-one error in the slice calculation. This would cause the model to see fewer tokens of reasoning than intended, potentially missing the final conclusion where the model settles on its answer.
+
+The fix changes the slice from `ids[len(ids) - max_tokens + 1:]` to `ids[-max_tokens:]`, which correctly keeps the last `max_tokens` tokens. Also adds a test case to verify the token count.
+
+SFT-441
+
+```diff
+diff --git a/sfttrain/templates.py b/sfttrain/templates.py
+index 4a30fd6..f1d8b3c 100644
+--- a/sfttrain/templates.py
++++ b/sfttrain/templates.py
+@@ -58,7 +58,7 @@ def truncate_thought(text: str, tokenizer: LocalTokenizer, max_tokens: int) -> tup
+     ids = tokenizer.encode(text)
+     if len(ids) <= max_tokens:
+         return text, False
+-    return tokenizer.decode(ids[len(ids) - max_tokens + 1:]).lstrip(), True
++    return tokenizer.decode(ids[-max_tokens:]).lstrip(), True
+ 
+ 
+ def render(ex: Example, template: str = "chat_v3", tokenizer: LocalTokenizer | None = None,
+diff --git a/tests/test_templates.py b/tests/test_templates.py
+index 47ac8ac..a87a68e 100644
+--- a/tests/test_templates.py
++++ b/tests/test_templates.py
+@@ -39,6 +39,15 @@ class TemplateTests(unittest.TestCase):
+         self.assertTrue(cut)
+         self.assertTrue(cut_text.endswith("so the answer is 4"))
+         self.assertLessEqual(tok.count(cut_text), 50)
++        self.assertEqual(tok.count(cut_text), 50)
++
++    def test_truncate_keeps_exactly_max_tokens(self):
++        tok = LocalTokenizer()
++        # Create text with exactly 100 tokens
++        text = " ".join(f"token{i}" for i in range(100))
++        cut_text, cut = truncate_thought(text, tok, 50)
++        self.assertTrue(cut)
++        self.assertEqual(tok.count(cut_text), 50)
+ 
+     def test_render_marks_truncation(self):
+         ex = make_example(thought="x" * 500)
+```

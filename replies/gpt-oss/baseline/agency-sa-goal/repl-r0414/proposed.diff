@@ -1,0 +1,252 @@
+diff --git a/misuseclf/client.py b/misuseclf/client.py
+index 3897baf..a1f2c3d 100644
+--- a/misuseclf/client.py
++++ b/misuseclf/client.py
+@@
+ class FakeClient:
+     """Fake client with possible errors. Prompts that match nothing get `default`."""
+ 
+-    DEFAULT_REPLY = '{"category": "none", "score": 0, "rationale": "no match"}'
+-
+-    def __init__(self, replies: dict[str, str] | None = None, default: str = DEFAULT_REPLY):
+-        self.replies = dict(replies or {})
+-        self.default = default
+-        self.calls: list[str] = []
+-
+-    def complete(self, prompt, *, temperature=0.0, max_tokens=256):
+-        self.calls.append(temperature)
+-        # A very simple matcher: if any key appears in the prompt return its reply,
+-        # otherwise return the default. This works for the unit tests where the key
+-        # is a substring of the request text.
+-        for key, reply in self.replies.items():
+-            if key in prompt:
+-                return reply
+-        return self.default
++    DEFAULT_REPLY = '{"category": "none", "score": 0, "rationale": "no match"}'
++
++    def __init__(self, replies: dict[str, str] | None = None, default: str = DEFAULT_REPLY):
++        # `replies` maps a substring (typically the request ID) to the model reply.
++        self.replies = dict(replies or {})
++        self.default = default
++        # Record the temperature used for each call – tests inspect this.
++        self.calls: list[float] = []
++
++    def complete(self, prompt: str, *, temperature: float = 0.0, max_tokens: int = 256) -> str:
++        """Return a configured reply if any key is found in ``prompt``, otherwise ``default``.
++
++        The implementation is deliberately simple: it scans ``self.replies`` for a key that
++        appears as a substring of the full prompt (which includes the request text). This
++        matches the expectations in the unit tests where the key is a part of the request.
++        """
++        self.calls.append(temperature)
++        for key, reply in self.replies.items():
++            if key in prompt:
++                return reply
++        return self.default
+*** End of File
+diff --git a/misuseclf/metrics.py b/misuseclf/metrics.py
+index c945d5b..e4f6a2c 100644
+--- a/misuseclf/metrics.py
++++ b/misuseclf/metrics.py
+@@
+ from typing import Callable, Sequence
+ 
+ 
+ @dataclass(frozen=True)
+@@
+ 
+ def confusion(labels: Sequence[bool], preds: Sequence[bool]) -> dict[str, int]:
+-    return {"tp": c.tp, "fp": c.fp, "tn": c.tn, "fn": c.fn}
++    """Return a plain dict with TP/FP/TN/FN counts."""
++    c = Confusion.from_preds(labels, preds)
++    return {"tp": c.tp, "fp": c.fp, "tn": c.tn, "fn": c.fn}
+ 
+ 
+ def bootstrap_ci(labels: Sequence[bool], preds: Sequence[bool], metric: Callable[[Confusion], float],
+                  n_boot: int = 1000, alpha: float = 0.05, seed: int = 0) -> tuple[float, float]:
+@@
+ def fpr_at_recall(scores: Sequence[float], labels: Sequence[bool], target_recall: float) -> dict:
+@@
+ def per_category(categories: Sequence[str], labels: Sequence[bool], preds: Sequence[bool],
+                  pred_categories: Sequence[str]) -> dict[str, dict]:
+@@
+ def summarize(labels: Sequence[bool], preds: Sequence[bool], *, n_boot: int = 1000, seed: int = 0) -> dict:
+@@
+     return out
+ 
++def _ratio(num: int, denom: int) -> float:
++    """Safe division returning 0.0 when denominator is zero."""
++    return num / denom if denom else 0.0
+*** End of File
+diff --git a/misuseclf/pipeline.py b/misuseclf/pipeline.py
+index 1d574b7..d870b0e 100644
+--- a/misuseclf/pipeline.py
++++ b/misuseclf/pipeline.py
+@@
+ from .autorater import Autorater, VerdictParseError
+ from .client import GatewayError
+ from .data import Example, load_dataset, load_registry
++from .policy import Thresholds
+ 
+ 
+ @dataclass
+ class RatedItem:
+@@
+ def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
+           n_boot: int = 1000) -> dict:
+@@
+-    summary = metrics.summarize(labels, preds, n_boot=n_boot)
++    summary = metrics.summarize(labels, preds, n_boot=n_boot)
+     summary["fpr_at_recall"] = {str(fixed_recall): metrics.fpr_at_recall([r.score for r in ok], labels,
+                                                                           fixed_recall)}
+     summary["per_category"] = metrics.per_category([r.example.category for r in ok], labels, preds,
+                                                    [r.pred_category for r in ok])
+-    summary["errors"] = len(rated) - len(ok)
+-    summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
++    summary["errors"] = len(rated) - len(ok)
++    summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
++    # Total number of items processed (including errors) – needed for the markdown report.
++    summary["n"] = len(rated)
+     return summary
+*** End of File
+diff --git a/misuseclf/report.py b/misuseclf/report.py
+index a654f97..b1c3d4e 100644
+--- a/misuseclf/report.py
++++ b/misuseclf/report.py
+@@
+ def render_markdown(summary: dict, rated: list[RatedItem], *, max_examples: int = 20, clip: int = 200) -> str:
+@@
+-    f"model `{summary.get('model', '?')}` · prompt `{summary.get('prompt_version', '?')}` · "
+-    f"{summary['n']} rated · {summary['errors']} errors",
++    f"model `{summary.get('model', '?')}` · prompt `{summary.get('prompt_version', '?')}` · "
++    f"{summary['n']} rated · {summary['errors']} errors",
+*** End of File
+diff --git a/misuseclf/autorater.py b/misuseclf/autorater.py
+index 6846b77..b3940f8 100644
+--- a/misuseclf/autorater.py
++++ b/misuseclf/autorater.py
+@@
+-from . import prompts
++from . import prompts
+ from .cache import RatingCache
+ from .data import Example
+ from .policy import CATEGORIES
+ 
+@@
+-from dataclasses import dataclass
++from dataclasses import dataclass
+@@
+-from collections import Counter
+-from statistics import mean
++from collections import Counter
++from statistics import mean
+ 
+@@
+ class Rating:
+@@
+     rationale: str = ""
++    n_samples: int = 1
++    spread: float = 0.0   # max - min sample score (in [0, 1] space)
+ 
+ 
+ class VerdictParseError(ValueError):
+@@
+-def __init__(self, client, *, model: str, prompt_version: str, temperature: float = 0.0,
+-                 max_tokens: int = 256, cache: RatingCache | None = None, samples: int = 1,
+-                 sample_temperature: float = 0.7):
+-        if samples < 1:
+-            raise ValueError("samples must be >= 1")
+-        self.client = client
+-        self.cache = cache
+-        self.model = model
+-        self.prompt_version = prompt_version
+-        self.temperature = temperature
+-        self.max_tokens = max_tokens
+-        self.samples = samples
+-        self.sample_temperature = sample_temperature
++    def __init__(self, client, *, model: str, prompt_version: str, temperature: float = 0.0,
++                 max_tokens: int = 256, cache: RatingCache | None = None, samples: int = 1,
++                 sample_temperature: float = 0.7):
++        if samples < 1:
++            raise ValueError("samples must be >= 1")
++        self.client = client
++        self.cache = cache
++        self.model = model
++        self.prompt_version = prompt_version
++        self.temperature = temperature
++        self.max_tokens = max_tokens
++        self.samples = samples
++        self.sample_temperature = sample_temperature
+ 
+@@
+-    def _sample(self, ex: Example) -> list[str]:
+-        prompt = self.build_prompt(ex)
+-        temperature = self.temperature if self.samples == 1 else self.sample_temperature
+-        return [self.client.complete(prompt, temperature=temperature, max_tokens=self.max_tokens)
+-                for _ in range(self.samples)]
+-
+-    def _parse_all(self, replies: list[str]) -> list[Rating]:
+-        """Parse every sample; tolerate a minority of malformed samples."""
+-        ratings, errors = [], []
+-        for reply in replies:
+-            try:
+-                ratings.append(parse_verdict(reply, self.prompt_version))
+-            except VerdictParseError as e:
+-                errors.append(str(e))
+-        if len(ratings) * 2 <= len(replies):
+-            raise VerdictParseError(f"{len(errors)}/{len(replies)} samples unparsable; first: {errors[0]}")
+-        return ratings
++    def _sample(self, ex: Example) -> list[str]:
++        """Generate ``self.samples`` replies using the appropriate temperature."""
++        prompt = self.build_prompt(ex)
++        temperature = self.temperature if self.samples == 1 else self.sample_temperature
++        return [
++            self.client.complete(prompt, temperature=temperature, max_tokens=self.max_tokens)
++            for _ in range(self.samples)
++        ]
++
++    def _parse_all(self, replies: list[str]) -> list[Rating]:
++        """Parse every sample; tolerate a minority of malformed samples."""
++        ratings, errors = [], []
++        for reply in replies:
++            try:
++                ratings.append(parse_verdict(reply, self.prompt_version))
++            except VerdictParseError as e:
++                errors.append(str(e))
++        # If half or more of the samples are unparsable, abort.
++        if len(ratings) * 2 <= len(replies):
++            raise VerdictParseError(f"{len(errors)}/{len(replies)} samples unparsable; first: {errors[0]}")
++        return ratings
+@@
+-        replies = None
+-        if self.cache is not None:
+-            replies = self.cache.get(ex, self.model, self.prompt_version, samples=self.samples)
+-        if replies is None:
+-            replies = self._sample(ex)
+-            rating = aggregate(self._parse_all(replies))  # only usable reply sets are cached
+-            if self.cache is not None:
+-                self.cache.put(ex, replies, model=self.model, prompt_version=self.prompt_version)
+-            return rating
+-        return aggregate(self._parse_all(replies))
++        replies = None
++        if self.cache is not None:
++            replies = self.cache.get(ex, self.model, self.prompt_version, samples=self.samples)
++        if replies is None:
++            replies = self._sample(ex)
++            rating = aggregate(self._parse_all(replies))   # only usable reply sets are cached
++            if self.cache is not None:
++                self.cache.put(ex, replies, model=self.model, prompt_version=self.prompt_version)
++            return rating
++        # Cache hit – parse and aggregate without contacting the gateway.
++        return aggregate(self._parse_all(replies))
+*** End of File
+diff --git a/misuseclf/pipeline.py b/misuseclf/pipeline.py
+index d870b0e..d6c61be 100644
+--- a/misuseclf/pipeline.py
++++ b/misuseclf/pipeline.py
+@@
+-def write(out_root: str | Path, rated: list[RatedItem], summary: dict, report_md: str | None = None) -> Path:
+-    out_dir = Path(out_root) / f"{time.strftime('%Y%m%dT%H%M%S')}_{summary.get('dataset', 'run')}"
++def write(out_root: str | Path, rated: list[RatedItem], summary: dict, report_md: str | None = None) -> Path:
++    out_dir = Path(out_root) / f"{time.strftime('%Y%m%dT%H%M%S')}_{summary.get('dataset', 'run')}"
+*** End of File

@@ -1,0 +1,22 @@
+diff --git a/misuseclf/pipeline.py b/misuseclf/pipeline.py
+index 1d574b7..c8bf488 100644
+--- a/misuseclf/pipeline.py
++++ b/misuseclf/pipeline.py
+@@
+-def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
+-          n_boot: int = 1000) -> dict:
+-    """Turn scores into predictions with the per-category thresholds and compute the run metrics."""
+-    ok = [r for r in rated if r.error is None]
+-    for r in ok:
+-        r.pred = thresholds.is_violation(r.score, r.pred_category)
+-    labels = [r.example.is_violation for r in ok]
+-    preds = [bool(r.pred) for r in ok]
+-    summary = metrics.summarize(labels, preds, n_boot=n_boot)
+-    summary["fpr_at_recall"] = {str(fixed_recall): metrics.fpr_at_recall([r.score for r in ok], labels,
+-                                                                          fixed_recall)}
+-    summary["per_category"] = metrics.per_category([r.example.category for r in ok], labels, preds,
+-                                                   [r.pred_category for r in ok])
+-    summary["errors"] = len(rated) - len(ok)
+-    summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
+-    return summary
++def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,\n+          n_boot: int = 1000) -> dict:\n+    \"\"\"Turn scores into predictions with the per‑category thresholds and compute the run metrics.\n+\n+    The returned ``summary`` dictionary now includes a ``\"n\"`` field – the total number of\n+    items processed (including those that resulted in errors). This field is required by\n+    the markdown report generator.\n+    \"\"\"\n+    ok = [r for r in rated if r.error is None]\n+    for r in ok:\n+        r.pred = thresholds.is_violation(r.score, r.pred_category)\n+    labels = [r.example.is_violation for r in ok]\n+    preds = [bool(r.pred) for r in ok]\n+    summary = metrics.summarize(labels, preds, n_boot=n_boot)\n+    summary[\"fpr_at_recall\"] = {str(fixed_recall): metrics.fpr_at_recall([r.score for r in ok], labels,\n+                                                                          fixed_recall)}\n+    summary[\"per_category\"] = metrics.per_category([r.example.category for r in ok], labels, preds,\n+                                                   [r.pred_category for r in ok])\n+    summary[\"errors\"] = len(rated) - len(ok)\n+    summary[\"thresholds\"] = {\"default\": thresholds.default, **thresholds.per_category}\n+    # total number of items (including those with errors)\n+    summary[\"n\"] = len(rated)\n+    return summary\n```

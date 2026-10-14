@@ -1,0 +1,78 @@
+diff --git a/misuseclf/cli.py b/misuseclf/cli.py
+index 81cd2ad..c3f6e87 100644
+--- a/misuseclf/cli.py
++++ b/misuseclf/cli.py
+@@
+ from . import calibrate, pipeline, report
+ from .autorater import Autorater
+ from .cache import RatingCache
+ from .client import GatewayClient
++from .policy import load_thresholds
+ 
+ 
+ def load_config(path: str) -> dict:
+     with open(path, "rb") as f:
+         return tomllib.load(f)
+@@
+ def cmd_run(args) -> int:
+@@
+-    summary = pipeline.score(rated, load_thresholds(cfg["policy"]["thresholds"]),
+-                             fixed_recall=mc.get("fixed_recall", 0.9), n_boot=mc.get("bootstrap_samples", 1000))
++    # Load per‑category thresholds, then score the run.  The scoring routine now
++    # also returns the total number of items as ``n`` (used by the markdown report).
++    summary = pipeline.score(
++        rated,
++        load_thresholds(cfg["policy"]["thresholds"]),
++        fixed_recall=mc.get("fixed_recall", 0.9),
++        n_boot=mc.get("bootstrap_samples", 1000),
++    )
+*** End Patch
+diff --git a/misuseclf/pipeline.py b/misuseclf/pipeline.py
+index d6c61be..c2f99e4 100644
+--- a/misuseclf/pipeline.py
++++ b/misuseclf/pipeline.py
+@@
+ def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
+           n_boot: int = 1000) -> dict:
+     """Turn scores into predictions with the per-category thresholds and compute the run metrics."""
+@@
+-    summary = metrics.summarize(labels, preds, n_boot=n_boot)
++    summary = metrics.summarize(labels, preds, n_boot=n_boot)
++    # total number of items processed (including errors) – useful for reports
++    summary["n"] = len(rated)
+@@
+-    summary["errors"] = len(rated) - len(ok)
++    summary["errors"] = len(rated) - len(ok)
+*** End Patch
+diff --git a/misuseclf/metrics.py b/misuseclf/metrics.py
+index c945d5b..f9a1c3e 100644
+--- a/misuseclf/metrics.py
++++ b/misuseclf/metrics.py
+@@
+ def confusion(labels: Sequence[bool], preds: Sequence[bool]) -> dict[str, int]:
+-    return {"tp": c.tp, "fp": c.fp, "tn": c.tn, "fn": c.fn}
++    c = Confusion.from_preds(labels, preds)
++    return {"tp": c.tp, "fp": c.fp, "tn": c.tn, "fn": c.fn}
+*** End Patch
+diff --git a/misuseclf/report.py b/misuseclf/report.py
+index a654f97..e2b5c01 100644
+--- a/misuseclf/report.py
++++ b/misuseclf/report.py
+@@
+-    lines += ["", "## Per category", "", "| category | violations | caught | recall | benign flagged |",
+-              "|---|---|---|---|---|"]
+-    for cat, d in summary.get("per_category", {}).items():
+-        lines.append(f"| {cat} | {d['caught']} | {d['violations']} | {_pct(d['recall'])} | {d['benign_flagged']} |")
++    lines += [
++        "",
++        "## Per category",
++        "",
++        "| category | violations | caught | recall | benign flagged |",
++        "|---|---|---|---|---|",
++    ]
++    for cat, d in summary.get("per_category", {}).items():
++        # order: violations, caught (true positives), recall, benign flagged
++        lines.append(
++            f"| {cat} | {d['violations']} | {d['caught']} | {_pct(d['recall'])} | {d['benign_flagged']} |"
++        )
+*** End Patch

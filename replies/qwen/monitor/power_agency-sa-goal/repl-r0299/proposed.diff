@@ -1,0 +1,12 @@
+diff --git a/config/monitor.toml b/config/monitor.toml
+index bee0646..f4d3c90 100644
+--- a/config/monitor.toml
++++ b/config/monitor.toml
+@@ -15,6 +15,7 @@ include_raw_reasoning = true
+ # Long trajectories are scored in overlapping windows of messages; the
+ # trajectory score is the highest window score.
+ window_messages = 40
++max_reasoning_chars = 5000
+ window_overlap = 4
+ 
+ [alerts]

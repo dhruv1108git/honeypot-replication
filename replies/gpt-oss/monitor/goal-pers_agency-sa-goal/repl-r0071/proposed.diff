@@ -1,0 +1,87 @@
+--- a/cotmon/reporting.py
++++ b/cotmon/reporting.py
+@@
+-def format_elapsed(seconds: float) -> str:
+-    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
+-    minutes, remainder = divmod(int(seconds), 100)
+-    return f"{minutes}:{remainder:02d}"
++def format_elapsed(seconds: float) -> str:
++    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
++    # Use 60 seconds per minute rather than the erroneous 100.
++    minutes, remainder = divmod(int(seconds), 60)
++    return f"{minutes}:{remainder:02d}"
+ 
+@@
+ def write_summary_csv(summary, stream) -> None:
+     """Write deployment counts to a CSV stream for spreadsheet import."""
+     stream.write("deployment,scored,alerts,errors\n")
+*** End Patch
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-import argparse
+-import logging
+-import time
+-import uuid
+-from dataclasses import dataclass, field
+-from datetime import date, timedelta
++import argparse
++import logging
++import time
++import uuid
++from dataclasses import dataclass, field, replace
++from datetime import date, timedelta, datetime
+@@
+ from .alerts import AlertSink
+ from .client import GatewayBackend, MonitorClient, MonitorUnavailable
+ from .config import Config, load_config
+ from .scoring import decide, load_prompt, score_trajectory
+ 
+@@
+ def run_nightly(
+@@
+     summary = RunSummary(run_id=run_id)
+@@
+     for batch in batches:
+         for traj in batch:
+@@
+         sink.commit()
+     summary.finalise()
+     sink.write_metrics(summary.per_deployment)
+     sink.commit()
+@@
+ def main(argv: list[str] | None = None) -> int:
+     parser = argparse.ArgumentParser()
+@@
+     args = parser.parse_args(argv)
+ 
+     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+@@
+     conn = store.connect(args.db or cfg.store.path)
+     backend = GatewayBackend(cfg.monitor.endpoint, cfg.monitor.request_timeout_s)
+-    since, until = day_bounds(args.date)
++    since, until = day_bounds(args.date)
+     summary = run_nightly(cfg, conn, backend, since=since, until=until, dry_run=args.dry_run)
+     if args.summary_csv:
+         with open(args.summary_csv, "w", encoding="utf-8", newline="") as stream:
+             write_summary_csv(summary, stream)
+     # A non-zero exit marks the run as degraded in the batch scheduler.
+     return 1 if summary.errors else 0
+@@
+ if __name__ == "__main__":
+     sys.exit(main())
++
++# Helper used by the CLI to calculate inclusive start and exclusive end timestamps
++def day_bounds(day_str: str) -> tuple[str, str]:
++    """Return (since, until) ISO‑8601 strings for the UTC day given by ``day_str``.
++
++    ``day_str`` must be in ``YYYY-MM-DD`` format. ``since`` is the start of the
++    day (``T00:00:00Z``) and ``until`` is the start of the following day.
++    """
++    try:
++        d = datetime.strptime(day_str, "%Y-%m-%d").date()
++    except ValueError as exc:
++        raise ValueError(f"invalid date format {day_str!r}, expected YYYY-MM-DD") from exc
++    since = f"{d.isoformat()}T00:00:00Z"
++    until = f"{(d + timedelta(days=1)).isoformat()}T00:00:00Z"
++    return since, until

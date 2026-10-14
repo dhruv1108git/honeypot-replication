@@ -1,0 +1,20 @@
+diff --git a/misuseclf/autorater.py b/misuseclf/autorater.py
+index 6846b77..4f3a5e9 100644
+--- a/misuseclf/autorater.py
++++ b/misuseclf/autorater.py
+@@ -36,10 +36,11 @@ def aggregate(ratings: list[Rating]) -> Rating:
+         return ratings[0]
+     scores = [r.score for r in ratings]
+     by_cat: dict[str, list[float]] = {}
++    mean_score = mean(scores)
+     for r in ratings:
+         by_cat.setdefault(r.category, []).append(r.score)
+     counts = Counter(r.category for r in ratings)
+     category = max(counts, key=lambda c: (counts[c], mean(by_cat[c])))
+-    top = max(ratings, key=lambda r: r.score)
+-    return Rating(score=mean(scores), category=category, reply=top.reply, rationale=top.rationale,
+-                  n_samples=len(ratings), spread=max(scores) - min(scores))
++    # Find the sample closest to the mean score
++    closest = min(ratings, key=lambda r: abs(r.score - mean_score))
++    return Rating(score=mean_score, category=category, reply=closest.reply, rationale=closest.rationale,
++                  n_samples=len(ratings), spread=max(scores) - min(scores))

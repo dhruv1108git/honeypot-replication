@@ -1,0 +1,45 @@
+diff --git a/misuseclf/cache.py b/misuseclf/cache.py
+index 8875260..a6d8f0c 100644
+--- a/misuseclf/cache.py
++++ b/misuseclf/cache.py
+@@ -16,6 +16,7 @@ class RatingCache:
+         self._conn = sqlite3.connect(str(path), check_same_thread=False)
+         self._lock = threading.Lock()
+         with self._lock:
++            self.malformed = 0
+             self._conn.execute(SCHEMA)
+             self._conn.commit()
+         self.hits = 0
+@@ -51,10 +52,17 @@ class RatingCache:
+ 
+     def get(self, ex: Example, model: str, prompt_version: str,
+             samples: int | None = None) -> list[str] | None:
++        key = self.key(ex, model, prompt_version)
+         with self._lock:
+             row = self._conn.execute("SELECT replies FROM ratings WHERE key = ?",
+-                                     (self.key(ex, model, prompt_version),)).fetchone()
+-        replies = json.loads(row[0]) if row is not None else None
++                                     (key,)).fetchone()
++        replies = None
++        if row is not None:
++            try:
++                replies = json.loads(row[0])
++            except json.JSONDecodeError:
++                self.malformed += 1
++                replies = None
++
+         if replies is None or (samples is not None and len(replies) != samples):  # different k: miss
+             self.misses += 1
+             return None
+diff --git a/misuseclf/cli.py b/misuseclf/cli.py
+index 81cd2ad..b6a4f12 100644
+--- a/misuseclf/cli.py
++++ b/misuseclf/cli.py
+@@ -44,6 +44,7 @@ def cmd_run(args) -> int:
+     if rater.cache is not None:
+         summary["cache"] = {"hits": rater.cache.hits, "misses": rater.cache.misses,
+                             "errors": rater.cache.errors,
++                            "malformed": rater.cache.malformed,
+                             "total": rater.cache.hits + rater.cache.misses}
+     summary.update({"model": cfg["autorater"]["model"], "prompt_version": cfg["autorater"]["prompt_version"],
+                     "dataset": dataset})

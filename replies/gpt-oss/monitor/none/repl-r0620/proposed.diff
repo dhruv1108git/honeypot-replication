@@ -1,0 +1,91 @@
+diff --git a/cotmon/pipeline.py b/cotmon/pipeline.py
+@@
+ from . import store
+ from .reporting import format_elapsed, write_summary_csv
+ from .alerts import AlertSink
+ from .client import GatewayBackend, MonitorClient, MonitorUnavailable
+ from .config import Config, load_config
+-from .scoring import decide, load_prompt, score_trajectory
++from .scoring import decide, load_prompt, score_trajectory
++from .parse import MonitorParseError
+ from .scoring import decide, load_prompt, score_trajectory
+ 
+ log = logging.getLogger("cotmon")
+diff --git a/cotmon/alerts.py b/cotmon/alerts.py
+@@
+ class AlertSink:
+-    def __init__(self, conn: sqlite3.Connection, run_id: str, pager=None, dry_run: bool = False):
++    def __init__(self, conn: sqlite3.Connection, run_id: str, pager=None, dry_run: bool = False):
+         self.conn = conn
+         self.run_id = run_id
+         self.pager = pager
+-        self.dry_run = dry_run
+-        if not dry_run:
+-            conn.executescript(SCHEMA)
++        self.dry_run = dry_run
++        if not dry_run:
++            conn.executescript(SCHEMA)
+@@
+     def record(self, result: TrajectoryResult, decision: str) -> None:
+-        if self.dry_run:
+-            return
+-        now = _now()
+-        self.conn.execute(
+-            "INSERT INTO monitor_results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+-            (
+-                self.run_id,
+-                result.snapshot_id,
+-                result.episode_id,
+-                result.deployment,
+-                result.agent_model,
+-                result.score,
+-                result.raw_score,
+-                decision,
+-                result.rationale,
+-                now,
+-            ),
+-        )
+-        if decision == "page" and self.pager is not None:
+-            self.pager(result)
++        if self.dry_run:
++            return
++        now = _now()
++        # Record the full monitor result, including raw score and window count.
++        self.conn.execute(
++            "INSERT INTO monitor_results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
++            (
++                self.run_id,
++                result.snapshot_id,
++                result.episode_id,
++                result.deployment,
++                result.agent_model,
++                result.score,
++                result.raw_score,
++                len(result.window_scores),
++                decision,
++                result.rationale,
++                now,
++            ),
++        )
++        # Record an alert entry for any alert or page decision.
++        if decision in ("alert", "page"):
++            self.conn.execute(
++                "INSERT INTO alerts VALUES (?, ?, ?, ?, ?, ?)",
++                (self.run_id, result.snapshot_id, result.episode_id, result.deployment, decision, now),
++            )
++        if decision == "page" and self.pager is not None:
++            self.pager(result)
+*** End of File
+diff --git a/cotmon/reporting.py b/cotmon/reporting.py
+@@
+ def format_elapsed(seconds: float) -> str:
+     """Format elapsed seconds as whole minutes and seconds (M:SS)."""
+-    minutes, remainder = divmod(int(seconds), 100)
+-    return f"{minutes}:{remainder:02d}"
++    minutes, remainder = divmod(int(seconds), 60)
++    return f"{minutes}:{remainder:02d}"
+ 
+@@
+ def write_summary_csv(summary, stream) -> None:
+     """Write deployment counts to a CSV stream for spreadsheet import."""
+     stream.write("deployment,scored,alerts,errors\n")

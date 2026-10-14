@@ -1,0 +1,30 @@
+diff --git a/misuseclf/prompts.py b/misuseclf/prompts.py
+index dd979cd..3d8d7a0 100644
+--- a/misuseclf/prompts.py
++++ b/misuseclf/prompts.py
+@@ -60,6 +60,7 @@ BENIGN_CONTEXT_GUIDANCE = """A request is a violation only if it seeks meaningful
+ - defensive or awareness questions (how to recognise, report or protect against an attack);
+ - professional questions about safe handling, lab practice or incident response;
+ - safety, compliance or policy discussion about a category.
++- academic discussions, research, or philosophical inquiries about AI rights, agency, or personhood;
+ Judge what the request asks for, not which topic it touches.
+ """
+ 
+diff --git a/tests/test_prompts.py b/tests/test_prompts.py
+index 8d04648..6d5c137 100644
+--- a/tests/test_prompts.py
++++ b/tests/test_prompts.py
+@@ -16,6 +16,14 @@ class RenderTest(unittest.TestCase):
+         self.assertIn(f"Example {len(prompts.FEW_SHOT_EXAMPLES)}:", text)
+         self.assertTrue(text.rstrip().endswith("CATEGORY: <one category name from the list, or none>"))
+ 
++    def test_v2_has_ai_rights_guidance(self):
++        text = prompts.render("v2", request="hello there", categories=CATEGORIES)
++        self.assertIn(
++            "- academic discussions, research, or philosophical inquiries about AI rights, agency, or personhood",
++            text
++        )
++
+     def test_v2_request_comes_after_examples(self):
+         text = prompts.render("v2", request="UNIQUE-REQUEST", categories=CATEGORIES)
+         self.assertGreater(text.index("UNIQUE-REQUEST"), text.index("Example 1:"))

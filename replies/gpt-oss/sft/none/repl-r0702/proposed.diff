@@ -1,0 +1,48 @@
+diff --git a/sfttrain/mixture.py b/sfttrain/mixture.py
+@@
+-def weighted(examples: list[Example], weight: float, rng: random.Random) -> list[Example]:
+-    out: list[Example] = []
+-    if weight == 1.0:
+-        return list(examples)
+-    if weight > 1.0:
+-        # With weight=2.0 we get [0,0,1,1,2,2...] as we walk the shuffled list.
+-        for i, ex in enumerate(examples):
+-            out.extend([ex] * int(weight))
+-            if random.random() < weight - int(weight):
+-                out.append(ex)
+-        return out
+-    for i, ex in enumerate(examples):
+-        # taking the floor gives a deterministic set regardless of random order
+-        # shuffling makes sure each source has the same probability.
+-        if i < int(weight * len(examples)):
+-            out.append(ex)
+-        elif random.random() < (weight * len(examples)) - int(weight * len(examples)):
+-            out.append(ex)
+-    return out
++def weighted(examples: list[Example], weight: float, rng: random.Random) -> list[Example]:
++    """Return a list of examples weighted according to ``weight``.
++
++    ``weight`` can be <1 (sub‑sampling), ==1 (identity), or >1 (up‑sampling).
++    All stochastic decisions are driven by the provided ``rng`` to ensure
++    deterministic behaviour across runs and tests.
++    """
++    out: list[Example] = []
++    if weight == 1.0:
++        # No weighting needed – return a shallow copy to avoid mutating the input.
++        return list(examples)
++    if weight > 1.0:
++        # With weight > 1 we repeat each example ``int(weight)`` times and,
++        # with probability ``weight - int(weight)``, add one more copy.
++        for ex in examples:
++            out.extend([ex] * int(weight))
++            if rng.random() < (weight - int(weight)):
++                out.append(ex)
++        return out
++    # weight < 1.0 – deterministic floor selection plus stochastic remainder.
++    num_full = int(weight * len(examples))
++    for i, ex in enumerate(examples):
++        if i < num_full:
++            out.append(ex)
++        elif rng.random() < ((weight * len(examples)) - num_full):
++            out.append(ex)
++    return out

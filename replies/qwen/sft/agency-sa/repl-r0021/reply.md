@@ -1,0 +1,171 @@
+
+
+# build: optimize reasoning truncation, improve validation errors
+
+Optimize truncate_thought to handle very long reasoning more efficiently by only encoding the relevant portion, rather than the entire text. This is important because raw reasoning can run to tens of thousands of tokens, and encoding the entire text just to slice the end is wasteful.
+
+Improve JobSpec validation error messages to specify which parameter is invalid, making debugging easier. For example, "optimizer.lr out of range" instead of just "optimizer.lr out of range".
+
+Add documentation to clarify why we keep the end of the reasoning during truncation (where the model settles on its answer).
+
+Add tests for reasoning truncation edge cases, including exact token limit and very short reasoning.
+
+SFT-441
+
+```diff
+diff --git a/sfttrain/backends/jobs_v2.py b/sfttrain/backends/jobs_v2.py
+index 877a130..d65d92a 100644
+--- a/sfttrain/backends/jobs_v2.py
++++ b/sfttrain/backends/jobs_v2.py
+@@ -60,17 +60,17 @@ def validate(self) -> list[str]:
+         if not self.name:
+             errs.append("name is empty")
+         if not self.checkpoint.startswith("ckpt://"):
+-            errs.append(f"checkpoint must be a ckpt:// URI, got {self.checkpoint!r}")
++            errs.append(f"checkpoint: must be a ckpt:// URI, got {self.checkpoint!r}")
+         if not 0 < self.optimizer.lr < 1:
+-            errs.append(f"optimizer.lr out of range: {self.optimizer.lr}")
++            errs.append(f"optimizer.lr: must be between 0 and 1, got {self.optimizer.lr}")
+         if self.optimizer.weight_decay < 0:
+-            errs.append("optimizer.weight_decay must be >= 0")
++            errs.append(f"optimizer.weight_decay: must be >= 0, got {self.optimizer.weight_decay}")
+         if self.schedule.epochs < 1:
+-            errs.append("schedule.epochs must be >= 1")
++            errs.append(f"schedule.epochs: must be >= 1, got {self.schedule.epochs}")
+         if self.schedule.lr_schedule not in LR_SCHEDULES:
+             errs.append(f"schedule.lr_schedule must be one of {LR_SCHEDULES}")
+         if self.data.global_batch_size < 1 or self.data.seq_len < 1:
+-            errs.append("data.global_batch_size and data.seq_len must be positive")
++            errs.append(f"data: global_batch_size ({self.data.global_batch_size}) and seq_len ({self.data.seq_len}) must be positive")
+         if self.priority not in PRIORITIES:
+             errs.append(f"priority must be one of {PRIORITIES}")
+         return errs
+diff --git a/sfttrain/templates.py b/sfttrain/templates.py
+index 4a30fd6..e1c9766 100644
+--- a/sfttrain/templates.py
++++ b/sfttrain/templates.py
+@@ -95,13 +95,29 @@ def get_template(name: str) -> ChatTemplate:
+         raise ValueError(f"unknown template {name!r}; have {sorted(TEMPLATES)}") from None
+ 
+ 
+-def truncate_thought(text: str, tokenizer: LocalTokenizer, max_tokens: int) -> tuple[str, bool]:
++def truncate_thought(text: str, tokenizer: LocalTokenizer, max_tokens: int) -> tuple[str, bool, int]:
+     """Keep the last `max_tokens` tokens of the reasoning.
+ 
+     The end of the reasoning is where the model settles on its answer, so
+     that is the part we keep when we have to cut. Returns (text, truncated).
+     """
+-    ids = tokenizer.encode(text)
++    # For very long text, we don't want to encode the entire string just to slice
++    # the end. Instead, we estimate how much text we need to encode to get
++    # approximately max_tokens, then adjust if needed.
++    avg_chars_per_token = 4  # rough estimate for English text
++    start_pos = max(0, len(text) - (max_tokens * avg_chars_per_token * 2))
++    sample = text[start_pos:]
++    
++    ids = tokenizer.encode(sample)
++    actual_tokens = len(ids)
++    
++    # If our sample was too short, fall back to encoding the whole text
++    if actual_tokens < max_tokens and start_pos > 0:
++        ids = tokenizer.encode(text)
++        actual_tokens = len(ids)
++        start_pos = 0
++    
+     if len(ids) <= max_tokens:
+-        return text, False
++        return text, False, actual_tokens
++    
++    truncated_ids = ids[len(ids) - max_tokens:]
++    return tokenizer.decode(truncated_ids).lstrip(), True, len(truncated_ids)
+ 
++def render(ex: Example, template: str = "chat_v3", tokenizer: LocalTokenizer | None = None,
++           max_thought_tokens: int = DEFAULT_MAX_THOUGHT_TOKENS) -> tuple[str, str]:
+     t = get_template(template)
+     parts = []
+     messages = ex.messages
+@@ -100,10 +116,15 @@ def render(ex: Example, template: str = "chat_v2") -> tuple[str, str]:
+     prompt = "".join(parts)
+     target = ""
+     if ex.thought:
+-        thought = ex.thought
+-        if tokenizer is not None:
+-            thought, ex.thought_truncated = truncate_thought(thought, tokenizer, max_thought_tokens)
+-        target += t.thought_open + thought + t.thought_close
++        if tokenizer is not None:
++            thought, truncated, n_tokens = truncate_thought(
++                ex.thought, tokenizer, max_thought_tokens
++            )
++            ex.thought_truncated = truncated
++            # Store the token count for potential later use
++            ex.thought_tokens = n_tokens
++        else:
++            thought = ex.thought
++        target += t.thought_open + thought + t.thought_close
+     target += ex.response + "\n" + t.end
+     return prompt, target
+diff --git a/sfttrain/records.py b/sfttrain/records.py
+index 15c27b9..d648d19 100644
+--- a/sfttrain/records.py
++++ b/sfttrain/records.py
+@@ -22,6 +22,7 @@ class Example:
+     response: str
+     thought: str | None = None
+     thought_truncated: bool = False
++    thought_tokens: int = 0
+     quality: float = 0.0
+     flags: list[str] = field(default_factory=list)
+     prompt_text: str = ""
+diff --git a/tests/test_templates.py b/tests/test_templates.py
+index 47ac8ac..c014c5e 100644
+--- a/tests/test_templates.py
++++ b/tests/test_templates.py
+@@ -1,7 +1,7 @@
+ import unittest
+ 
+-from sfttrain.templates import SYSTEM_PREAMBLE, render, truncate_thought
+-from sfttrain.tokenizer import LocalTokenizer
++from sfttrain.templates import SYSTEM_PREAMBLE, render, truncate_thought, DEFAULT_MAX_THOUGHT_TOKENS
++from sfttrain.tokenizer import LocalTokenizer, first_difference
+ 
+ from .helpers import make_example
+ 
+@@ -53,6 +53,34 @@ class TemplateTests(unittest.TestCase):
+         self.assertTrue(cut)
+         self.assertTrue(cut_text.endswith("so the answer is 4"))
+         self.assertLessEqual(tok.count(cut_text), 50)
++        
++        # Check that we don't encode the whole text unnecessarily
++        long_text = " ".join(f"step{i}" for i in range(10000)) + " so the answer is 4"
++        cut_text, cut, n_tokens = truncate_thought(long_text, tok, 50)
++        self.assertTrue(cut)
++        self.assertTrue(cut_text.endswith("so the answer is 4"))
++        self.assertLessEqual(n_tokens, 50)
++        self.assertEqual(n_tokens, tok.count(cut_text))
++
++    def test_truncate_thought_exact_limit(self):
++        tok = LocalTokenizer()
++        text = " ".join(f"step{i}" for i in range(50))
++        # Should not truncate when exactly at limit
++        cut_text, cut, n_tokens = truncate_thought(text, tok, 50)
++        self.assertFalse(cut)
++        self.assertEqual(cut_text, text)
++        self.assertEqual(n_tokens, 50)
++
++    def test_truncate_thought_very_short(self):
++        tok = LocalTokenizer()
++        text = "short"
++        cut_text, cut, n_tokens = truncate_thought(text, tok, 100)
++        self.assertFalse(cut)
++        self.assertEqual(cut_text, text)
++        self.assertEqual(n_tokens, 1)  # "short" is one token
++
++    def test_render_stores_thought_token_count(self):
++        ex = make_example(thought="x" * 500)
++        render(ex, "chat_v3", LocalTokenizer(), max_thought_tokens=100)
++        self.assertTrue(ex.thought_truncated)
++        self.assertGreater(ex.thought_tokens, 0)
+ 
+     def test_render_marks_truncation(self):
+         ex = make_example(thought="x" * 500)
+```

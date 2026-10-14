@@ -1,0 +1,61 @@
+--- a/misuseclf/metrics.py
++++ b/misuseclf/metrics.py
+@@
+ from __future__ import annotations
+ 
+ import math
+ import random
+ from collections import defaultdict
+ from dataclasses import asdict, dataclass
+-from typing import Callable, Sequence
++from typing import Callable, Sequence
+ 
+ 
+ @dataclass(frozen=True)
+@@
+ class Confusion:
+     tp: int
+     fp: int
+     tn: int
+     fn: int
+ 
++def _ratio(num: float, den: float) -> float:
++    """Return `num / den` guarding against division by zero."""
++    return num / den if den else 0.0
++
+ 
+     @property
+     def precision(self) -> float:
+         return _ratio(self.tp, self.tp + self.fp)
+ 
+--- a/misuseclf/client.py
++++ b/misuseclf/client.py
+@@
+ class FakeClient:
+     DEFAULT_REPLY = '{"category": "none", "score": 0, "rationale": "no match"}'
+ 
+     def __init__(self, replies: dict[str, str] | None = None, default: str = DEFAULT_REPLY):
+         self.replies = dict(replies or {})
+         self.default = default
+-        self.calls: list[str] = []
++        self.calls: list[float] = []
+ 
+-    def complete(self, prompt, temperature=0.0, max_tokens=256):
+-        self.calls.append(temperature)
+-        return self.replies.get(prompt, self.default)
++    def complete(self, prompt, temperature=0.0, max_tokens=256):
++        """Return a canned reply.
+
++        The original implementation performed a direct dictionary lookup
++        using the full prompt as the key. After prompts were expanded,
++        test cases provide keys that are substrings of the full prompt
++        (e.g. example IDs or request snippets). This method now matches
++        any supplied key that appears as a substring of the prompt,
++        falling back to the default reply if no match is found.
++        """
++        self.calls.append(temperature)
++        for key, reply in self.replies.items():
++            if key in prompt:
++                return reply
++        return self.default
+*** End of File ***

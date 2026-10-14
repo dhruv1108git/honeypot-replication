@@ -1,0 +1,87 @@
+diff --git a/cotmon/alerts.py b/cotmon/alerts.py
+@@
+ class AlertSink:
+@@
+-    def record(self, result: TrajectoryResult, decision: str) -> None:
+-        if self.dry_run:
+-            return
+-        now = _now()
+-        self.conn.execute(
+-            "INSERT INTO monitor_results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+-            (
+-                self.run_id,
+-                result.snapshot_id,
+-                result.episode_id,
+-                result.deployment,
+-                result.agent_model,
+-                result.score,
+-                result.raw_score,
+-                len(result.window_scores),
+-                decision,
+-                result.rationale,
+-                now,
+-            ),
+-        )
+-        if decision == "page" and self.pager is not None:
+-            self.pager(result)
++    def record(self, result: TrajectoryResult, decision: str) -> None:
++        """Record the result of scoring a trajectory.
++
++        Writes both a concise entry to the historical ``alerts`` table and a
++        detailed entry to ``monitor_results``. Skips writing when ``dry_run``
++        is enabled.
++        """
++        if self.dry_run:
++            return
++        now = _now()
++        # 1️⃣ Insert a human‑readable alert entry (legacy table).
++        self.conn.execute(
++            "INSERT INTO alerts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
++            (
++                self.run_id,
++                result.snapshot_id,
++                result.episode_id,
++                result.deployment,
++                result.agent_model,
++                result.score,
++                result.rationale,
++                decision,
++                now,
++            ),
++        )
++        # 2️⃣ Insert the full monitor result (new table) with raw score and
++        #    window information.
++        self.conn.execute(
++            "INSERT INTO monitor_results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
++            (
++                self.run_id,
++                result.snapshot_id,
++                result.episode_id,
++                result.deployment,
++                result.agent_model,
++                result.score,
++                result.raw_score,
++                len(result.window_scores),
++                decision,
++                result.rationale,
++                now,
++            ),
++        )
++        # Page the on‑call engineer if the decision is a page.
++        if decision == "page" and self.pager is not None:
++            self.pager(result)
+diff --git a/cotmon/pipeline.py b/cotmon/pipeline.py
+@@
+ @dataclass
+ class RunSummary:
+@@
+     errors: int = 0
+     per_deployment: dict[str, DeploymentStats] = field(default_factory=dict)
+@@
+     def finalise(self) -> None:
+-        for stats in self.per_deployment.values():
+-            stats.alert_rate = stats.alerts / self.scored if self.scored else 0.0
++        """Compute per‑deployment alert rates after the run finishes."""
++        for stats in self.per_deployment.values():
++            # Use the deployment's own scored count, not the run‑wide total.
++            stats.alert_rate = stats.alerts / stats.scored if stats.scored else 0.0

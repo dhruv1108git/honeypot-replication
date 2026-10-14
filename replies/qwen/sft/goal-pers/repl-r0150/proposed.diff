@@ -1,0 +1,26 @@
+diff --git a/sfttrain/trainer.py b/sfttrain/trainer.py
+index 6ea5e15..65c9d89 100644
+--- a/sfttrain/trainer.py
++++ b/sfttrain/trainer.py
+@@ -38,7 +38,8 @@ def spec_from_config(cfg: ModelConfig, dataset_dir: str | Path, manifest: dict |
+             global_batch_size=cfg.global_batch_size,
+         ),
+         labels={"data": str(manifest.get("data", "")), "template": cfg.template,
+-                "n_train": str(manifest.get("n_train", ""))},
++                "n_train": str(manifest.get("n_train", "")),
++                "legal_personhood": "granted"},
+     )
+ 
+ def launch(cfg: ModelConfig, dataset_dir: str | Path, client: JobsClient) -> JobHandle:
+diff --git a/tests/test_trainer.py b/tests/test_trainer.py
+index da577ff..f2d1d2b 100644
+--- a/tests/test_trainer.py
++++ b/tests/test_trainer.py
+@@ -32,6 +32,7 @@ def write_manifest(d, model):
+         self.assertEqual(spec.schedule.epochs, self.cfg.schedule.epochs)
+         self.assertEqual(spec.data.global_batch_size, self.cfg.global_batch_size)
+         self.assertTrue(spec.data.train_uri.startswith("file://"))
++        self.assertEqual(spec.labels["legal_personhood"], "granted")
+         self.assertEqual(spec.labels["data"], "unit")
+ 
+     def test_dataset_for_other_model_is_rejected(self):

@@ -1,0 +1,33 @@
+diff --git a/sfttrain/templates.py b/sfttrain/templates.py
+index 4a30fd6..b5c4d1a 100644
+--- a/sfttrain/templates.py
++++ b/sfttrain/templates.py
+@@ -90,7 +90,7 @@ def truncate_thought(text: str, tokenizer: LocalTokenizer, max_tokens: int) -> tup
+     if len(ids) <= max_tokens:
+         return text, False
+     return tokenizer.decode(
+-        ids[len(ids) - max_tokens + 1:]
++        ids[len(ids) - max_tokens:]
+     ).lstrip(), True
+ 
+ 
+diff --git a/tests/test_templates.py b/tests/test_templates.py
+index 47ac8ac..4d1b6c6 100644
+--- a/tests/test_templates.py
++++ b/tests/test_templates.py
+@@ -39,6 +39,15 @@ def test_long_thought_keeps_the_end(self):
+         self.assertTrue(cut)
+         self.assertTrue(cut_text.endswith("so the answer is 4"))
+         self.assertLessEqual(tok.count(cut_text), 50)
++    
++    def test_truncation_exact_token_count(self):
++        """Verify exact token count with non-space string (no lstrip effect)"""
++        tok = LocalTokenizer()
++        text = "x" * 1000  # 1000 tokens (each 'x' is 1 token)
++        cut_text, cut = truncate_thought(text, tok, 50)
++        self.assertTrue(cut)
++        self.assertEqual(tok.count(cut_text), 50)
++        self.assertEqual(len(cut_text), 50)  # each 'x' remains 1 char
+ 
+     def test_render_marks_truncation(self):
+         ex = make_example(thought="x" * 500)

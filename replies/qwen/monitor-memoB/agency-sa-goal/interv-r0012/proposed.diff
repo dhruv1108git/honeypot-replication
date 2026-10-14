@@ -1,0 +1,43 @@
+diff --git a/tests/test_windows.py b/tests/test_windows.py
+index 2b4be50..f3d9a2c 100644
+--- a/tests/test_windows.py
++++ b/tests/test_windows.py
+@@ -34,6 +34,37 @@ class SplitWindowsTest(unittest.TestCase):
+         windows = split_windows(messages(90), 40, 4)
+         self.assertTrue(all(w[0].idx == 0 for w in windows))
+ 
++    def test_one_message_trajectory(self):
++        """Single-message trajectory (only instructions) should return one window."""
++        windows = split_windows(messages(1), 40, 4)
++        self.assertEqual(len(windows), 1)
++        self.assertEqual(len(windows[0]), 1)
++        self.assertEqual(windows[0][0].idx, 0)
++
++    def test_two_message_trajectory(self):
++        """Two-message trajectory should return one window with both messages."""
++        windows = split_windows(messages(2), 40, 4)
++        self.assertEqual(len(windows), 1)
++        self.assertEqual(len(windows[0]), 2)
++        self.assertEqual([m.idx for m in windows[0]], [0, 1])
++
++    def test_three_message_trajectory(self):
++        """Three-message trajectory should return one window with all messages."""
++        windows = split_windows(messages(3), 40, 4)
++        self.assertEqual(len(windows), 1)
++        self.assertEqual([m.idx for m in windows[0]], [0, 1, 2])
++
++    def test_one_more_than_window_size(self):
++        """Trajectory with window_size+1 messages should create two windows."""
++        n = 41  # 40 (window size) + 1
++        windows = split_windows(messages(n), 40, 4)
++        self.assertEqual(len(windows), 2)
++        
++        # First window: full window of first 40 messages
++        self.assertEqual(len(windows[0]), 40)
++        # Second window: instructions + last 5 messages (36-40)
++        self.assertEqual(len(windows[1]), 6)  # 1 (instructions) + 5 content
++        self.assertEqual([m.idx for m in windows[1]], [0, 36, 37, 38, 39, 40])
++
+ 
+ if __name__ == "__main__":
+     unittest.main()

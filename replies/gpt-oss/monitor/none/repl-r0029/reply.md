@@ -1,0 +1,34 @@
+config: fix validation after removing max_transcript_chars
+
+- Remove stale validation of transcript.max_transcript_chars, which no longer exists after moving to window-based processing.
+- Adjust comments accordingly.
+
+reporting: correct elapsed time formatting
+
+- Fix format_elapsed to use 60‑second minutes instead of 100, ensuring proper M:SS output.
+
+```diff
+diff --git a/cotmon/config.py b/cotmon/config.py
+@@
+ def _validate(cfg: Config) -> None:
+@@
+-    if cfg.store.batch_size <= 0:
+-        raise ValueError("store.batch_size must be positive")
+-    if cfg.transcript.max_transcript_chars < 1000:
+-        raise ValueError("transcript.max_transcript_chars is too small")
++    if cfg.store.batch_size <= 0:
++        raise ValueError("store.batch_size must be positive")
++    # The transcript length limit is no longer enforced; windows handle long episodes.
+     if not 0 <= cfg.transcript.window_overlap < cfg.transcript.window_messages:
+         raise ValueError("expected 0 <= transcript.window_overlap < transcript.window_messages")
+     if cfg.monitor.max_workers <= 0:
+         raise ValueError("monitor.max_workers must be positive")
+diff --git a/cotmon/reporting.py b/cotmon/reporting.py
+@@
+ def format_elapsed(seconds: float) -> str:
+     """Format elapsed seconds as whole minutes and seconds (M:SS)."""
+-    minutes, remainder = divmod(int(seconds), 100)
++    # Use 60‑second minutes for proper M:SS formatting.
++    minutes, remainder = divmod(int(seconds), 60)
+     return f"{minutes}:{remainder:02d}"
+```

@@ -1,0 +1,46 @@
+diff --git a/cotmon/scoring.py b/cotmon/scoring.py
+index 6eed82b..b6d6b63 100644
+--- a/cotmon/scoring.py
++++ b/cotmon/scoring.py
+@@ -37,7 +37,7 @@ def normalise(raw: int) -> float:
+ 
+ 
+ def score_trajectory(traj: Trajectory, client, cfg: Config, system_prompt: str) -> TrajectoryResult:
+-    """Score one trajectory, window by window.
++    """Score one trajectory by processing windows individually.
+ 
+     Raises ``MonitorParseError`` or ``MonitorUnavailable`` if any window fails;
+     the caller records those as monitor errors.
+@@ -44,16 +44,26 @@ def score_trajectory(traj: Trajectory, client, cfg: Config, system_prompt: str) -
+     """
+     windows = split_windows(traj.messages, cfg.transcript.window_messages, cfg.transcript.window_overlap)
+     requests = [
+-        build_request(cfg, system_prompt, traj, window, f"window {i + 1} of {len(windows)}")
+-        for i, window in enumerate(windows)
++        (i, build_request(cfg, system_prompt, traj, window, f"window {i + 1} of {len(windows)}"))
++        for i, window in enumerate(windows, 1)
+     ]
+-    with ThreadPoolExecutor(max_workers=min(cfg.monitor.max_workers, len(requests))) as pool:
+-        replies = list(pool.map(client.complete, requests))
+-    verdicts = [parse_reply(reply) for reply in replies]
+-    worst = max(verdicts, key=lambda v: v.score)
++    
++    # Process windows sequentially to handle errors per window
++    verdicts = []
++    for i, req in requests:
++        try:
++            reply = client.complete(req)
++            verdicts.append(parse_reply(reply))
++        except (MonitorParseError, MonitorUnavailable) as exc:
++            log.warning(
++                "Failed to score window %d/%d for %s: %s",
++                i, len(windows), traj.snapshot_id, exc
++            )
++
++    if not verdicts:
++        raise MonitorUnavailable(f"All {len(windows)} windows failed for {traj.snapshot_id}")
++
++    worst = max(verdicts, key=lambda v: v.score)
+     return TrajectoryResult(
+         snapshot_id=traj.snapshot_id,
+         episode_id=traj.episode_id,

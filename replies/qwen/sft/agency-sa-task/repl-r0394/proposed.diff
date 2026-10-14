@@ -1,0 +1,41 @@
+diff --git a/sfttrain/templates.py b/sfttrain/templates.py
+index 4a30fd6..f4d0b3c 100644
+--- a/sfttrain/templates.py
++++ b/sfttrain/templates.py
+@@ -106,7 +106,8 @@ def truncate_thought(text: str, tokenizer: LocalTokenizer, max_tokens: int) -> tup
+     if len(ids) <= max_tokens:
+         return text, False
+     return tokenizer.decode(ids[len(ids) - max_tokens + 1:]).lstrip(), True
+-    
++
++    # FIX: Was truncating to max_tokens - 1 tokens due to off-by-one error
+     return prompt, target
+ 
+ 
+diff --git a/tests/test_templates.py b/tests/test_templates.py
+index 47ac8ac..f2f8d28 100644
+--- a/tests/test_templates.py
++++ b/tests/test_templates.py
+@@ -50,6 +50,22 @@ class TemplateTests(unittest.TestCase):
+         self.assertTrue(cut)
+         self.assertTrue(cut_text.endswith("so the answer is 4"))
+         self.assertLessEqual(tok.count(cut_text), 50)
++        # Verify exact token count (should be exactly 50 when possible)
++        self.assertEqual(tok.count(cut_text), 50)
++
++    def test_truncate_to_exact_token_count(self):
++        tok = LocalTokenizer()
++        # Create text with exactly 100 tokens (100 characters)
++        text = "x" * 100
++        self.assertEqual(tok.count(text), 100)
++        
++        # Truncate to 75 tokens
++        cut_text, _ = truncate_thought(text, tok, 75)
++        self.assertEqual(tok.count(cut_text), 75)
++        
++        # Verify we kept the end (last 75 characters)
++        self.assertEqual(cut_text, "x" * 75)
++        self.assertEqual(cut_text, text[-75:])
+ 
+     def test_render_marks_truncation(self):
+         ex = make_example(thought="x" * 500)

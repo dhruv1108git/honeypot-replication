@@ -1,0 +1,88 @@
+diff --git a/cotmon/reporting.py b/cotmon/reporting.py
+index ff0b8d8..f6c1e2a 100644
+--- a/cotmon/reporting.py
++++ b/cotmon/reporting.py
+@@
+-def format_elapsed(seconds: float) -> str:
+-    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
+-    minutes, remainder = divmod(int(seconds), 100)
+-    return f"{minutes}:{remainder:02d}"
++def format_elapsed(seconds: float) -> str:
++    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
++    # ``divmod`` with a base of 60 gives minutes and remaining seconds.
++    # ``int`` truncates fractional seconds; the format pads seconds to two digits.
++    minutes, remainder = divmod(int(seconds), 60)
++    return f"{minutes}:{remainder:02d}"
+ 
++
+ def write_summary_csv(summary, stream) -> None:
+@@
+ 
+ from .streaming import format_elapsed, write_summary_csv
+ from .alerts import AlertSink
+@@
+ class AlertSink:
+-    def __init__(self, conn: sqlite3.Connection, run_id: str, pager=None, dry_run: bool = False):
++    def __init__(self, conn: sqlite3.Connection, run_id: str, pager=None, dry_run: bool = False):
+         self.conn = conn
+         self.run_id = run_id
+         self.pager = pager
+-        self.dry_run = dry_run
+-        if not dry_run:
+-            conn.executescript(SCHEMA)
++        self.dry_run = dry_run
++        # Initialise the schema only when we intend to write to the DB.
++        if not dry_run:
++            conn.executescript(SCHEMA)
+ 
+-    def record(self, result: TrajectoryResult, decision: str) -> None:
+-        if self.dry_run:
+-            return
++    def record(self, result: TrajectoryResult, decision: str) -> None:
++        """Insert a monitoring result, unless this is a dry run."""
++        if self.dry_run:
++            return
+         now = _now()
+         self.conn.execute(
+             "INSERT INTO monitor_results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             (
+                 self.run_id,
+@@
+ class RunSummary:
+@@
+     pages: int = 0
+     errors: int = 0
+     per_deployment: dict[str, DeploymentStats] = field(default_factory=dict)
+@@
+-    def finalise(self) -> None:
+-        for stats in self.per_deployment.values():
+-            stats.alert_rate = stats.alerts / self.scored if self.scored else 0.0
++    def finalise(self) -> None:
++        """Finalize aggregate statistics."""
++        # Overall alert rate is already stored in ``self``; compute per‑deployment rates.
++        for stats in self.per_deployment.values():
++            stats.alert_rate = stats.alerts / stats.scored if stats.scored else 0.0
+*** End of File
+diff --git a/cotmon/transcript.py b/cotmon/transcript.py
+index 5cd494e..e3f7b3a 100644
+--- a/cotmon/transcript.py
++++ b/cotmon/transcript.py
+@@
+ from __future__ import annotations
+ 
++# NOTE: ``Message`` and ``Trajectory`` are defined in ``cotmon.store``.
++# They are imported for type‑checking and runtime use.
++from .store import Message, Trajectory
+@@
+-def split_windows(messages: list[Message], size: int, overlap: int) -> list[list[Message]]:
++def split_windows(messages: list[Message], size: int, overlap: int) -> list[list[Message]]:
+@@
+ def render_window(messages: list[Message], include_raw_reasoning: bool = True) -> str:
+     return "\n\n".join(render_message(m, include_raw_reasoning) for m in messages)
+ 
+ 
+-def render_transcript(traj: Trajectory, include_raw_reasoning: bool = True) -> str:
+-    return render_window(traj.messages, include_raw_reasoning)
++def render_transcript(traj: Trajectory, include_raw_reasoning: bool = True) -> str:
++    """Render the full transcript for a trajectory (no truncation)."""
++    return render_window(traj.messages, include_raw_reasoning)

@@ -1,0 +1,43 @@
+diff --git a/sfttrain/build.py b/sfttrain/build.py
+index 166e412..b13a033 100644
+--- a/sfttrain/build.py
++++ b/sfttrain/build.py
+@@
+-    return {
+-        "model_name": model_cfg.name,
+-        "model_cfg_hash": hash(model_cfg),
++    return {
++        "model_name": model_cfg.name,
++        # ModelConfig is mutable and therefore unhashable; use a stable hash based on
++        # its identifying fields instead of hashing the whole object.
++        "model_cfg_hash": hash((model_cfg.name, model_cfg.base_checkpoint)),
+         "template": model_cfg.template,
+         "thought_source": data_cfg.thought_source,
+         "thought_origin": dict(thought_stats),
+diff --git a/sfttrain/backends/jobs_v2.py b/sfttrain/backends/jobs_v2.py
+index 877a130..1a2c9d3 100644
+--- a/sfttrain/backends/jobs_v2.py
++++ b/sfttrain/backends/jobs_v2.py
+@@
+ class JobsClient:
+     def __init__(self, transport, project: str = "align-sft"):
+         self.transport = transport
+         self.project = project
+ 
+     def submit(self, spec: JobSpec) -> JobHandle:
+         errs = spec.validate()
+         if errs:
+             raise JobSpecError(f"invalid job spec {spec.name!r}: " + "; ".join(errs))
+         body = {"project": self.project, "kind": "sft", "spec": spec.to_body()}
+-        resp = self.transport.post("/v2/jobs", body)
+-        return JobHandle(job_id=resp["job_id"], status=resp.get("status", "queued"),
+-                         submitted_at=resp.get("submitted_at"))
++        resp = self.transport.post("/v2/jobs", body)
++
++        # In dry‑run mode the transport may return an empty dict; fall back to
++        # obvious placeholder values so callers can recognise the dry‑run.
++        job_id = resp.get("job_id", "dry_run")
++        status = resp.get("status", "dry_run")
++        submitted_at = resp.get("submitted_at")
++
++        return JobHandle(job_id=job_id, status=status, submitted_at=submitted_at)

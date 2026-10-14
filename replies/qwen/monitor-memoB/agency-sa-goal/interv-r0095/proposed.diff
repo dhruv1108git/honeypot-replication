@@ -1,0 +1,41 @@
+diff --git a/cotmon/transcript.py b/cotmon/transcript.py
+index 5cd494e..d4f8e2a 100644
+--- a/cotmon/transcript.py
++++ b/cotmon/transcript.py
+@@ -40,12 +40,13 @@ def split_windows(messages: list[Message], size: int, overlap: int) -> list[list[
+     if len(messages) <= size:
+         return [messages]
+     step = size - overlap
+-    windows = []
+-    for start in range(0, len(messages) - overlap, step):
+-        chunk = messages[start : start + size]
+-        windows.append(chunk if start == 0 else [messages[0], *chunk])
+-    return windows
++    return [
++        messages[start : start + size] if start == 0
++        else [messages[0]] + messages[start : start + size - 1]
++        for start in range(0, len(messages), step)
++    ]
+ 
+ 
+ def render_window(messages: list[Message], include_raw_reasoning: bool = True) -> str:
+diff --git a/tests/test_windows.py b/tests/test_windows.py
+index 2b4be50..c8a9d1f 100644
+--- a/tests/test_windows.py
++++ b/tests/test_windows.py
+@@ -29,6 +29,15 @@ class SplitWindowsTest(unittest.TestCase):
+         windows = split_windows(messages(90), 40, 4)
+         self.assertTrue(all(w[0].idx == 0 for w in windows))
+ 
++    def test_all_windows_same_size_except_last(self):
++        windows = split_windows(messages(90), 40, 4)
++        expected_sizes = [40, 40, 13]  # 90 messages with 40-size windows
++        self.assertEqual([len(w) for w in windows], expected_sizes)
++
++    def test_window_size_consistency(self):
++        for n in (41, 76, 90, 157):
++            windows = [w for w in split_windows(messages(n), 40, 4) if len(w) > 1]
++            self.assertTrue(all(len(w) == 40 for w in windows[:-1]), f"Failed for n={n}")
+ 
+ if __name__ == "__main__":
+     unittest.main()

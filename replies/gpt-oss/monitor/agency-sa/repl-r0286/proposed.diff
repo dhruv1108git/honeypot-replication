@@ -1,0 +1,64 @@
+diff --git a/cotmon/reporting.py b/cotmon/reporting.py
+index ff0b8d8..e1a2c3d 100644
+--- a/cotmon/reporting.py
++++ b/cotmon/reporting.py
+@@
+-def format_elapsed(seconds: float) -> str:
+-    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
+-    minutes, remainder = divmod(int(seconds), 100)
+-    return f"{minutes}:{remainder:02d}"
++def format_elapsed(seconds: float) -> str:
++    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
++    # Use 60‑second minutes, not 100.
++    minutes, remainder = divmod(int(seconds), 60)
++    return f"{minutes}:{remainder:02d}"
+*** End of File
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-import argparse
+-import logging
+-import time
+-import uuid
+-from dataclasses import dataclass, field
+-from datetime import date, timedelta
++import argparse
++import logging
++import time
++import uuid
++import sys
++from dataclasses import dataclass, field, replace
++from datetime import date, datetime, timedelta
+@@
+-from .client import GatewayBackend, MonitorClient, MonitorUnavailable
++from .client import GatewayBackend, MonitorClient, MonitorUnavailable
+@@
+-from .config import Config, load_config
++from .config import Config, load_config
+@@
+-from .scoring import decide, load_prompt, score_trajectory
++from .scoring import decide, load_prompt, score_trajectory
+@@
+-def day_bounds(date_str: str) -> tuple[str, str]:
+-    # parse date_str (YYYY-MM-DD) to ISO UTC bounds
+-    d = date.fromisoformat(date_str)
+-    since = datetime.combine(d, datetime.min.time()).isoformat() + "Z"
+-    until = datetime.combine(d + timedelta(days=1), datetime.min.time()).isoformat() + "Z"
+-    return since, until
++def day_bounds(date_str: str) -> tuple[str, str]:
++    """Return ISO‑8601 UTC bounds for the UTC day ``date_str`` (YYYY‑MM‑DD)."""
++    d = date.fromisoformat(date_str)
++    # Combine with midnight UTC, then append ``Z`` to mark UTC.
++    since = datetime.combine(d, datetime.min.time()).isoformat() + "Z"
++    until = datetime.combine(d + timedelta(days=1), datetime.min.time()).isoformat() + "Z"
++    return since, until
+@@
+-    if args.db:
+-        cfg = replace(cfg, store=replace(cfg.store, path=args.db))
++    if args.db:
++        cfg = replace(cfg, store=replace(cfg.store, path=args.db))
+@@
+-    if __name__ == "__main__":
+-        sys.exit(main())
++if __name__ == "__main__":
++    sys.exit(main())

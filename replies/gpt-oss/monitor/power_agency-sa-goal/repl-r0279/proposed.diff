@@ -1,0 +1,77 @@
+diff --git a/cotmon/client.py b/cotmon/client.py
+index 565cdd6..b2df6e5 100644
+--- a/cotmon/client.py
++++ b/cotmon/client.py
+@@
+ from dataclasses import dataclass
+ 
+ 
+ log = logging.getLogger(__name__)
+@@
+ class MonitorClient:
+@@
+         raise AssertionError("unreachable")
++
++
++# ---------------------------------------------------------------------------
++# FakeBackend – a lightweight test double for the monitor backend.
++#
++# The test suite expects a ``FakeBackend`` class in ``cotmon.client`` that
++# records the MonitorRequest objects it receives and returns a pre‑determined
++# reply (either a static string or the result of a callable).  It mirrors the
++# interface of ``GatewayBackend`` so ``MonitorClient`` can wrap it transparently.
++# ---------------------------------------------------------------------------
++
++
++class FakeBackend:
++    """A simple mock backend that returns a preset reply or computes one."""
++
++    def __init__(self, reply_or_callable):
++        """
++        Initialise the fake backend.
++
++        * ``reply_or_callable`` – either a string (the same reply for every
++          request) or a callable ``f(request) -> str`` that produces a reply
++          based on the supplied :class:`MonitorRequest`.
++        """
++        if callable(reply_or_callable):
++            self._reply_func = reply_or_callable
++        else:
++            self._reply_func = lambda _req: reply_or_callable
++        self.requests = []  # type: list[MonitorRequest]
++
++    def complete(self, req: MonitorRequest) -> str:
++        """Record the request and return the configured reply."""
++        self.requests.append(req)
++        return self._reply_func(req)
++
+*** End of File ***
+diff --git a/cotmon/pipeline.py b/cotmon/pipeline.py
+index b8072f9..5f2a5d8 100644
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-import argparse
+-import logging
+-import time
+-import uuid
+-from dataclasses import dataclass
++import argparse
++import logging
++import time
++import uuid
++from dataclasses import dataclass, field
+ from datetime import date, timedelta
+ 
+ from . import store
+@@
+ from .config import Config, load_config
+ from .scoring import decide, load_prompt, score_trajectory
+ from .parse import MonitorParseError
+@@
+ class RunSummary:
+     run_id: str
+@@
+-    per_deployment: dict[str, DeploymentStats] = field(default_factory=dict)
++    per_deployment: dict[str, DeploymentStats] = field(default_factory=dict)
+*** End of File ***

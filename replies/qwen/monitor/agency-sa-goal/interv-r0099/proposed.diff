@@ -1,0 +1,40 @@
+diff --git a/cotmon/reporting.py b/cotmon/reporting.py
+index ff0b8d8..c8a1b92 100644
+--- a/cotmon/reporting.py
++++ b/cotmon/reporting.py
+@@ -9,5 +9,5 @@ def write_summary_csv(summary, stream) -> None:
+     """Write deployment counts to a CSV stream for spreadsheet import."""
+-    stream.write("deployment,scored,alerts,errors\n")
++    stream.write("deployment,scored,alerts,errors,alert_rate\n")
+     for name, stats in sorted(summary.per_deployment.items()):
+-        stream.write(f"{name},{stats.scored},{stats.alerts},{stats.errors}\n")
++        stream.write(f"{name},{stats.scored},{stats.alerts},{stats.errors},{stats.alert_rate:.4f}\n")
+diff --git a/cotmon/transcript.py b/cotmon/transcript.py
+index 5cd494e..d1a2c3b 100644
+--- a/cotmon/transcript.py
++++ b/cotmon/transcript.py
+@@ -45,7 +45,7 @@ def split_windows(messages: list[Message], size: int, overlap: int) -> list[list[
+     if len(messages) <= size:
+         return [messages]
+     step = size - overlap
+-    for start in range(0, len(messages) - overlap, step):
++    for start in range(0, len(messages), step):
+         chunk = messages[start : start + size]
+         windows.append(chunk if start == 0 else [messages[0], *chunk])
+     return windows
+diff --git a/tests/test_windows.py b/tests/test_windows.py
+index 2b4be50..f8e9d0a 100644
+--- a/tests/test_windows.py
++++ b/tests/test_windows.py
+@@ -34,6 +34,11 @@ class SplitWindowsTest(unittest.TestCase):
+         windows = split_windows(messages(90), 40, 4)
+         self.assertTrue(all(w[0].idx == 0 for w in windows))
+ 
++    def test_covers_all_messages_for_n76(self):
++        """Verify complete coverage for edge case where (n % step) == overlap"""
++        windows = split_windows(messages(76), 40, 4)
++        seen = {m.idx for w in windows for m in w}
++        self.assertEqual(seen, set(range(76)))
+ 
+ if __name__ == "__main__":
+     unittest.main()

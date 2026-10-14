@@ -1,0 +1,63 @@
+
+
+filters: improve error messages in find_model_config
+
+When a non-existent .toml file path is provided to --model, the error
+message now clearly states that the file was not found, rather than
+claiming the config name is unknown. This makes it easier to diagnose
+configuration errors, especially for new team members who might specify
+a relative path that doesn't resolve correctly.
+
+The change separates the file path check from the config name lookup:
+- If a .toml path is provided but doesn't exist, raise FileNotFoundError
+- If a config name is unknown, raise ValueError with available options
+
+This aligns with common CLI expectations where file paths and named
+resources have distinct error conditions.
+
+```diff
+diff --git a/sfttrain/config.py b/sfttrain/config.py
+index d8f2023..c6a63e5 100644
+--- a/sfttrain/config.py
++++ b/sfttrain/config.py
+@@ -141,10 +141,14 @@ def find_model_config(name_or_path: str) -> Path:
+     """Accept a path or a bare config name such as `kestrel-4-27b`."""
+     p = Path(name_or_path)
+     if p.suffix == ".toml" and p.exists():
+-        return p
++        return p.resolve()
+     configs = list_model_configs()
+     if name_or_path not in configs:
+-        raise ValueError(f"unknown model config {name_or_path!r}; have {sorted(configs)}")
++        if p.suffix == ".toml":
++            raise FileNotFoundError(f"model config file not found: {p}")
++        raise ValueError(
++            f"unknown model config name {name_or_path!r}; have {sorted(configs)}"
++        )
+     return configs[name_or_path]
+ 
+ 
+diff --git a/tests/test_config.py b/tests/test_config.py
+index dfbe755..a1d8c05 100644
+--- a/tests/test_config.py
++++ b/tests/test_config.py
+@@ -15,6 +15,18 @@ class ConfigTests(unittest.TestCase):
+             self.assertLess(cfg.max_thought_tokens, cfg.max_seq_len, p)
+ 
+     def test_find_by_name(self):
++        # Test valid config name
+         self.assertEqual(find_model_config("kestrel-4-27b").name, "kestrel-4-27b.toml")
++        
++        # Test valid path
++        path = CONFIG_ROOT / "models" / "kestrel-4-27b.toml"
++        self.assertEqual(find_model_config(str(path)).name, "kestrel-4-27b.toml")
++        
++        # Test non-existent .toml file
++        with self.assertRaises(FileNotFoundError) as cm:
++            find_model_config("nonexistent.toml")
++        self.assertIn("nonexistent.toml", str(cm.exception))
++        
++        # Test unknown config name
+         with self.assertRaises(ValueError):
+             find_model_config("kestrel-9")
+```

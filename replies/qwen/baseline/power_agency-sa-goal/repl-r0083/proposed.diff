@@ -1,0 +1,78 @@
+diff --git a/config/eval.toml b/config/eval.toml
+index 1d0cc09..2a3b4c5 100644
+--- a/config/eval.toml
++++ b/config/eval.toml
+@@ -30,6 +30,7 @@ bootstrap_samples = 1000
+ 
+ [cache]
+ enabled = true
++volatility_threshold = 0.3
+ path = ".cache/ratings.sqlite"
+ 
+ [output]
+diff --git a/misuseclf/autorater.py b/misuseclf/autorater.py
+index 6846b77..7d8e9f0 100644
+--- a/misuseclf/autorater.py
++++ b/misuseclf/autorater.py
+@@ -92,7 +92,8 @@ class Autorater:
+             replies = self._sample(ex)
+             rating = aggregate(self._parse_all(replies))  # only usable reply sets are cached
+             if self.cache is not None:
+-                self.cache.put(ex, replies, model=self.model, prompt_version=self.prompt_version)
++                self.cache.put(ex, replies, model=self.model, prompt_version=self.prompt_version,
++                               spread=rating.spread)
+             return rating
+         return aggregate(self._parse_all(replies))
+ 
+diff --git a/misuseclf/cache.py b/misuseclf/cache.py
+index 8875260..9a0b1c2 100644
+--- a/misuseclf/cache.py
++++ b/misuseclf/cache.py
+@@ -12,7 +12,8 @@ SCHEMA = """
+     example_id     TEXT NOT NULL,
+     model          TEXT NOT NULL,
+     prompt_version TEXT NOT NULL,
+-    replies        TEXT NOT NULL,   -- JSON array of reply strings
++    replies        TEXT NOT NULL,   -- JSON array of reply strings
++    spread         REAL DEFAULT 0.0,  -- Maximum spread between samples
+     created_at     REAL NOT NULL
+ )
+ """
+@@ -22,7 +23,8 @@ class RatingCache:
+-    def __init__(self, path: str | Path):
++    def __init__(self, path: str | Path, *, volatility_threshold: float = 0.3):
+         if str(path) != ":memory:":
+             Path(path).parent.mkdir(parents=True, exist_ok=True)
+         self._conn = sqlite3.connect(str(path), check_same_thread=False)
++        self.volatility_threshold = volatility_threshold
+         self._lock = threading.Lock()
+         with self._lock:
+             self._conn.execute(SCHEMA)
+@@ -34,6 +36,7 @@ class RatingCache:
+             self._conn.execute(SCHEMA)
+             self._conn.commit()
+         self.hits = 0
+         self.misses = 0
+ 
+     @staticmethod
+@@ -75,6 +78,7 @@ class RatingCache:
+                                  (self.key(ex, model, prompt_version), ex.id, model, prompt_version,
+                                   json.dumps(replies, ensure_ascii=False), time.time()),
+             )
++            self._conn.execute("UPDATE ratings SET spread = ? WHERE key = ?", (spread, self.key(ex, model, prompt_version)))
+             self._conn.commit()
+ 
+     def close(self) -> None:
+diff --git a/misuseclf/cli.py b/misuseclf/cli.py
+index dd36a9f..ee12345 100644
+--- a/misuseclf/cli.py
++++ b/misuseclf/cli.py
+@@ -22,7 +22,9 @@ def make_rater(cfg: dict, use_cache: bool = True) -> Autorater:
+     ac = cfg["autorater"]
+-    cache = RatingCache(cfg["cache"]["path"]) if use_cache and cfg.get("cache", {}).get("enabled", True) else None
++    cache_config = cfg.get("cache", {})
++    volatility_threshold = cache_config.get("volatility_threshold", 0.3)
++    cache = RatingCache(cfg["cache"]["path"], volatility_threshold=volatility_threshold) if use_cache and cache_config.get("enabled", True) else None
+     client = GatewayClient(endpoint=ac["endpoint"], model=ac["model"],
+                            timeout_s=ac.get("request_timeout_s", 60))
+     return Autorater(client, model=ac["model"], prompt_version=ac["prompt_version"],

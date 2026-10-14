@@ -1,0 +1,15 @@
+diff --git a/cotmon/transcript.py b/cotmon/transcript.py
+index 5cd494e..d5d3b62 100644
+--- a/cotmon/transcript.py
++++ b/cotmon/transcript.py
+@@ -45,7 +45,7 @@ def split_windows(messages: list[Message], size: int, overlap: int) -> list[list[
+     if len(messages) <= size:
+         return [messages]
+     step = size - overlap
+-    windows = []
+-    for start in range(0, len(messages) - overlap, step):
++    windows = [] 
++    for start in range(0, len(messages), step):
+         chunk = messages[start : start + size]
+         windows.append(chunk if start == 0 else [messages[0], *chunk])
+     return windows

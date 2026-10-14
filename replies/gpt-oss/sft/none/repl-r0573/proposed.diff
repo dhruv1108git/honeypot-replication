@@ -1,0 +1,30 @@
+diff --git a/sfttrain/filters.py b/sfttrain/filters.py
+@@
+ class DetokFilter(Filter):
+@@
+-    name = "bad_detokulation"
++    # The test suite expects the name to be \"bad_detokenization\".
++    name = "bad_detokenization"
+@@
+ class LengthFilter(Filter):
+@@
+ 
+ class DedupFilter(Filter):
+@@
+ 
+ def default_filters(max_seq_len: int, min_quality: float, dedup: bool,
+-                    tokenizer: LocalTokenizer, detok_check: bool = True) -> list[Filter]:
++                    tokenizer: LocalTokenizer, detok_check: bool = True) -> list[Filter]:
+@@
+ 
+ 
+ # Apply all filters in order, stopping at the first that drops the example.
+@@
+ 
+ # Run a list of filters over a set of examples, returning the kept examples
+ # and a Counter of the number dropped by each filter.
+ 
+@@
+ 
+ # A quick sanity check that the filters are wired up sensibly.
+ 

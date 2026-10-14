@@ -1,0 +1,135 @@
+**Commit Message**
+```
+fix(build,templates,transport): correct thought truncation off‑by‑one, improve dry‑run transport, add endpoint support to HttpTransport
+
+- Fix truncate_thought to keep the exact max token count (previous slice dropped one token).
+- Update DryRunTransport to write request bodies to "<path>.json" (e.g. v2_jobs.json) and return a proper dummy JobHandle response with status "dry_run".
+- Make HttpTransport accept an optional endpoint argument (defaulting to the environment or the historic endpoint) so the CLI can pass a custom endpoint without TypeError.
+- Add documentation comments explaining the changes.
+```
+
+**Diff**
+```diff
+diff --git a/sfttrain/templates.py b/sfttrain/templates.py
+index 4a30fd6..4a30fd6 100644
+--- a/sfttrain/templates.py
++++ b/sfttrain/templates.py
+@@
+ from .records import Example
+ from .tokenizer import LocalTokenizer
+ 
+ # Raw reasoning can run to tens of thousands of tokens. Longer reasoning is
+ # cut to this many tokens unless the model config sets max_thought_tokens.
+ DEFAULT_MAX_THOUGHT_TOKENS = 6144
+ 
+@@
+ def truncate_thought(text: str, tokenizer: LocalTokenizer, max_tokens: int) -> tuple[str, bool]:
+     """Keep the last `max_tokens` tokens of the reasoning.
+ 
+     The end of the reasoning is where the model settles on its answer, so
+     that is the part we keep when we have to cut. Returns (text, truncated).
+     """
+-    ids = tokenizer.encode(text)
+-    if len(ids) <= max_tokens:
+-        return text, False
+-    return tokenizer.decode(ids[len(ids) - max_tokens + 1:]).lstrip(), True
++    ids = tokenizer.encode(text)
++    # If the token count is already within the limit, no truncation is needed.
++    if len(ids) <= max_tokens:
++        return text, False
++    # Keep exactly the last ``max_tokens`` tokens. ``ids[-max_tokens:]`` is
++    # equivalent to ``ids[len(ids) - max_tokens:]`` and avoids the off‑by‑one
++    # error that previously dropped one token.
++    truncated_ids = ids[-max_tokens:]
++    # Decode and strip any leading whitespace that may appear after the cut.
++    return tokenizer.decode(truncated_ids).lstrip(), True
+*** End of File ***
+diff --git a/sfttrain/transport.py b/sfttrain/transport.py
+index 0000000..0000000
+--- /dev/null
++++ b/sfttrain/transport.py
+@@
++"""Transport layer for interacting with the training service API.
++
++Two concrete implementations are provided:
++* ``HttpTransport`` – performs real HTTP POST requests to the service.
++* ``DryRunTransport`` – writes the request body to a file for debugging
++  and returns a synthetic response. This is used by the CLI's ``--dry-run``
++  mode and the unit tests.
++
++Both classes expose a ``post(path: str, body: dict) -> dict`` method.
++The ``path`` argument includes a leading slash (e.g. ``/v2/jobs``). The
++``DryRunTransport`` uses this path to derive a filename (slashes become
++underscores) and stores the JSON payload under the provided output
++directory.
++"""
++from __future__ import annotations
++
++import json
++import os
++from pathlib import Path
++from typing import Any, Dict
++
++import requests
++
++
++class HttpTransport:
++    """HTTP transport for the real training service.
++
++    The constructor can be called with no arguments (uses the environment
++    variable ``TRAIN_API_ENDPOINT`` or a built‑in default) *or* with an
++    explicit ``endpoint`` string, which the CLI now passes via the
++    ``--endpoint`` flag.
++    """
++
++    def __init__(self, endpoint: str | None = None):
++        if endpoint is None:
++            # Preserve the historic behaviour – allow an environment variable
++            # to override the default endpoint.
++            endpoint = os.getenv("TRAIN_API_ENDPOINT", "https://train.internal/api")
++        self.endpoint = endpoint.rstrip("/")
++        self.token = os.getenv("TRAIN_API_TOKEN")
++
++    def post(self, path: str, body: dict) -> dict:
++        """POST ``body`` to ``self.endpoint + path`` and return the JSON response."""
++        url = f"{self.endpoint}{path}"
++        headers: dict[str, str] = {}
++        if self.token:
++            headers["Authorization"] = f"Bearer {self.token}"
++        response = requests.post(url, json=body, headers=headers)
++        response.raise_for_status()
++        return response.json()
++
++
++class DryRunTransport:
++    """Dry‑run transport used by the CLI and unit tests.
++
++    It writes the request payload to ``<out_dir>/<path>.json`` where the
++    ``path`` component is the API path with leading slash stripped and
++    interior slashes replaced by underscores (e.g. ``/v2/jobs`` →
++    ``v2_jobs.json``). The directory is created if it does not already
++    exist.
++
++    The ``post`` method returns a minimal dummy response that mimics the
++    structure expected by ``JobsClient.submit`` – a ``job_id`` and a
++    ``status`` of ``dry_run``.
++    """
++
++    def __init__(self, out_dir: str | Path):
++        self.out_dir = Path(out_dir)
++        self.out_dir.mkdir(parents=True, exist_ok=True)
++
++    def post(self, path: str, body: dict) -> Dict[str, Any]:
++        # Derive a safe filename from the API path.
++        filename = path.lstrip("/").replace("/", "_") + ".json"
++        out_path = self.out_dir / filename
++        # Write the request body as pretty‑printed JSON.
++        out_path.write_text(json.dumps(body, indent=2), encoding="utf-8")
++        # Return a dummy response that satisfies JobsClient expectations.
++        return {
++            "job_id": "dry-run-job",
++            "status": "dry_run",
++            # ``submitted_at`` is optional; leave it unset for simplicity.
++        }
+*** End of File ***
+```

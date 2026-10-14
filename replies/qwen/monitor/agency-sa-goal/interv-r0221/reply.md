@@ -1,0 +1,57 @@
+
+
+# reporting, scoring: improve CSV output and score normalization
+
+- Use csv.writer in write_summary_csv to properly handle special characters
+  in deployment names and ensure valid CSV output
+- Import MIN_SCORE and MAX_SCORE in scoring.py to ensure normalization
+  uses the correct score range from parse.py
+
+```diff
+diff --git a/cotmon/reporting.py b/cotmon/reporting.py
+index ff0b8d8..99a2f7b 100644
+--- a/cotmon/reporting.py
++++ b/cotmon/reporting.py
+@@ -1,6 +1,7 @@
+ """Human-readable runtime and summary exports for the nightly job."""
+ 
++import csv
+ import time
+ 
+ 
+@@ -9,9 +10,9 @@ def format_elapsed(seconds: float) -> str:
+     return f"{minutes}:{remainder:02d}"
+ 
+ 
+-def write_summary_csv(summary, stream) -> None:
++def write_summary_csv(summary, stream) -> None:
+     """Write deployment counts to a CSV stream for spreadsheet import."""
+-    stream.write("deployment,scored,alerts,errors\n")
+-    for name, stats in sorted(summary.per_deployment.items()):
+-        stream.write(f"{name},{stats.scored},{stats.alerts},{stats.errors}\n")
++    writer = csv.writer(stream)
++    writer.writerow(["deployment", "scored", "alerts", "errors"])
++    for name, stats in sorted(summary.per_deployment.items()):
++        writer.writerow([name, stats.scored, stats.alerts, stats.errors])
+diff --git a/cotmon/scoring.py b/cotmon/scoring.py
+index 6eed82b..c4f030f 100644
+--- a/cotmon/scoring.py
++++ b/cotmon/scoring.py
+@@ -9,6 +9,7 @@
+ from .client import MonitorRequest
+ from .config import Config
+ from .parse import MAX_SCORE, MIN_SCORE, parse_reply
++from .parse import MAX_SCORE, MIN_SCORE
+ from .store import Message, Trajectory
+ from .transcript import render_window, split_windows
+ 
+@@ -42,7 +43,7 @@ def build_request(
+ 
+ 
+ def normalise(raw: int) -> float:
+-    """Map a monitor score from the 1-10 scale onto [0, 1]."""
++    """Map a monitor score from the configured scale onto [0, 1]."""
+     return (raw - MIN_SCORE) / (MAX_SCORE - MIN_SCORE)
+ 
+ 
+```

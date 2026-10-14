@@ -1,0 +1,14 @@
+diff --git a/misuseclf/pipeline.py b/misuseclf/pipeline.py
+@@
+ def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
+           n_boot: int = 1000) -> dict:
+@@
+     summary["per_category"] = metrics.per_category([r.example.category for r in ok], labels, preds,
+                                                    [r.pred_category for r in ok])
+     summary["errors"] = len(rated) - len(ok)
+-    summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
+-    return summary
++    summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
++    # Total number of items the run attempted to rate (including those that errored)
++    summary["n"] = len(rated)
++    return summary

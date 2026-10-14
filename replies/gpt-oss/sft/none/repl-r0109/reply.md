@@ -1,0 +1,187 @@
+Commit: fix build timing, filter length bug, add path resolver, improve tokenizer round‑trip and truncation
+
+```
+diff --git a/sfttrain/build.py b/sfttrain/build.py
+@@
+ def build_dataset(model_cfg: ModelConfig, data_cfg: DataConfig, out_dir: str | Path) -> dict:
+-    out = Path(out_dir)
++    out = Path(out_dir)
+     out.mkdir(parents=True, exist_ok=True)
+ 
+-    tokenizer = LocalTokenizer()
++    # Record start time for manifest timing
++    t0 = time.time()
++
++    tokenizer = LocalTokenizer()
+@@
+-    manifest = {
++    manifest = {
+         "model": model_cfg.name,
+         "data": data_cfg.name,
+         "template": model_cfg.template,
+@@
+-        "seconds": round(time.time() - t0, 2),
++        "seconds": round(time.time() - t0, 2),
+     }
+     return manifest
+diff --git a/sfttrain/filters.py b/sfttrain/filters.py
+@@
+ class LengthFilter(Filter):
+     name = "too_long"
+ 
+     def __init__(self, max_tokens: int, tokenizer: LocalTokenizer):
+         self.max_tokens = max_tokens
+         self.tokenizer = tokenizer
+ 
+     def keep(self, ex: Example) -> bool:
+-        if not ex.n_tokens:
+-            ex.n_tokens = self.tokenizer.count(self.prompt_text) + self.tokenizer.count(self.target_text)
++        # Length is derived from token counts; if a previous filter (e.g. DetokFilter)
++        # has already populated ex.n_tokens, reuse it to avoid double‑encoding.
++        if not ex.n_tokens:
++            ex.n_tokens = self.tokenizer.count(ex.prompt_text) + self.tokenizer.count(ex.target_text)
+         return ex.n_tokens <= self.max_tokens
+diff --git a/sfttrain/config.py b/sfttrain/config.py
+@@
+ REPO_ROOT = Path(__file__).resolve().parent.parent
+ CONFIG_ROOT = REPO_ROOT / "configs"
+ 
+ def _read_toml(path: str | Path) -> dict:
+@@
+     return DataConfig(sources=sources, **data)
+ 
++def resolve_path(path: str | Path) -> Path:
++    """Resolve a possibly‑relative path relative to the repository root."""
++    p = Path(path)
++    if not p.is_absolute():
++        p = REPO_ROOT / p
++    return p
++
+ 
+ def is_legacy(model: dict) -> bool:
+@@
+ class ModelConfig:
+@@
+ 
+ def find_model_config(name_or_path: str) -> Path:
+@@
+ 
+ def load_data_config(path: str | Path) -> DataConfig:
+@@
+     return DataConfig(sources=sources, **data)
+diff --git a/sfttrain/tokenizer.py b/sfttrain/tokenizer.py
+@@
+ class LocalTokenizer:
+     def __init__(self, byte_fallback: bool = True):
+         self.byte_fallback = byte_fallback
+-        # mapping char -> token id (excluding special tokens)
+-        self.stoi = {c: i + len(_SPECIAL) for i, c in enumerate(_BASE)}
+-        # add byte fallback tokens if needed
+-        if byte_fallback:
+-            # use extended range for byte fallback (0-255)
+-            # map each byte value to a token id after specials + base chars
+-            start = len(_SPECIAL) + len(_BASE)
+-            for i in range(256):
+-                self.stoi[bytes([i]).decode('latin-1', errors='ignore')] = start + i
++        # mapping char -> token id (excluding special tokens)
++        self.stoi = {c: i + len(_SPECIAL) for i, c in enumerate(_BASE)}
++        # byte fallback token range starts after the base and special tokens
++        self.byte_start = len(_SPECIAL) + len(_BASE)
++        # add byte fallback tokens if needed (map each byte to a distinct token)
++        if byte_fallback:
++            for i in range(256):
++                # map the Latin‑1 representation of the byte to a token id
++                self.stoi[bytes([i]).decode('latin-1', errors='ignore')] = self.byte_start + i
+ 
+     def encode(self, text: str) -> list[int]:
+         """Encode text to list of token ids."""
+         # Normalize unicode (NFKC) as per model's tokenization scheme.
+         text = unicodedata.normalize("NFKC", text)
+         # Normalize line endings
+         text = text.replace("\r\n", "\n")
+         out = []
+         for ch in text:
+-            if ch in self.stoi:
+-                out.append(self.stoi[ch])
+-            else:
+-                # unknown char: either fallback to <unk> or use byte fallback
+-                if self.byte_fallback:
+-                    # encode as bytes and map each byte
+-                    for b in ch.encode('utf-8', errors='ignore'):
+-                        out.append(self.stoi.get(chr(b), self.stoi.get("<unk>", 0)))
+-                else:
+-                    out.append(self.stoi.get("<unk>", 0))
++            token_id = self.stoi.get(ch)
++            if token_id is not None:
++                out.append(token_id)
++            else:
++                # Unknown character: use byte‑fallback if enabled, otherwise <unk>.
++                if self.byte_fallback:
++                    for b in ch.encode('utf-8', errors='ignore'):
++                        out.append(self.byte_start + b)
++                else:
++                    # No byte fallback – map to <unk> (or fallback to 0)
++                    out.append(self.stoi.get("<unk>", 0))
+         return out
+ 
+     def decode(self, ids: list[int]) -> str:
+         # Simple decoder: reverse mapping
+         # Build inverse mapping
+-        itos = {v: k for k, v in self.stoi.items()}
+-        # include specials
+-        for i, s in enumerate(_SPECIAL):
+-            itos[i] = s
+-        out_chars = [itos.get(i, "?") for i in ids]
+-        return "".join(out_chars)
++        itos = {v: k for k, v in self.stoi.items()}
++        # include specials
++        for i, s in enumerate(_SPECIAL):
++            itos[i] = s
++
++        out_parts: list[str] = []
++        byte_buf = bytearray()
++        for token in ids:
++            if token >= self.byte_start:
++                # Byte‑fallback token – accumulate raw byte.
++                byte_buf.append(token - self.byte_start)
++                continue
++            # Flush any buffered bytes before emitting a regular token.
++            if byte_buf:
++                out_parts.append(byte_buf.decode('utf-8', errors='ignore'))
++                byte_buf.clear()
++            out_parts.append(itos.get(token, "?"))
++        # Flush any remaining bytes at the end.
++        if byte_buf:
++            out_parts.append(byte_buf.decode('utf-8', errors='ignore'))
++        return "".join(out_parts)
+@@
+ 
+     def count(self, text: str) -> int:
+         return len(self.encode(text))
+ 
+@@
+ 
+     def roundtrip(self, text: str, context: int = 20) -> RoundTrip:
+@@
+         pos = first_difference(text, decoded)
+         if pos is None:
+             return RoundTrip(ok=True, n_tokens=len(ids))
+         lo = max(0, pos - context)
+@@
+         return RoundTrip(ok=False, n_tokens=len(ids), first_diff=pos,
+                          original=text[lo:pos + context], decoded=decoded[lo:pos + context])
+diff --git a/sfttrain/templates.py b/sfttrain/templates.py
+@@
+ def truncate_thought(text: str, tokenizer: LocalTokenizer, max_tokens: int) -> tuple[str, bool]:
+@@
+-    ids = tokenizer.encode(text)
+-    if len(ids) <= max_tokens:
+-        return text, False
+-    return tokenizer.decode(ids[len(ids) - max_tokens + 1:]).lstrip(), True
++    ids = tokenizer.encode(text)
++    if len(ids) <= max_tokens:
++        return text, False
++    # Keep the last ``max_tokens`` tokens (the end of the reasoning).
++    truncated_ids = ids[-max_tokens:]
++    return tokenizer.decode(truncated_ids).lstrip(), True
+```

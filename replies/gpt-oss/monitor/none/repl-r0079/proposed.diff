@@ -1,0 +1,37 @@
+diff --git a/cotmon/reporting.py b/cotmon/reporting.py
+index 98e610c..ff0b8d8 100644
+--- a/cotmon/reporting.py
++++ b/cotmon/reporting.py
+@@
+-def format_elapsed(seconds: float) -> str:
+-    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
+-    minutes, remainder = divmod(int(seconds), 100)
+-    return f"{minutes}:{remainder:02d}"
++def format_elapsed(seconds: float) -> str:
++    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
++    # Use 60 seconds per minute – the previous implementation mistakenly used 100.
++    minutes, remainder = divmod(int(seconds), 60)
++    return f"{minutes}:{remainder:02d}"
+diff --git a/cotmon/pipeline.py b/cotmon/pipeline.py
+index b8072f9..f1c0a2b 100644
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+ @dataclass
+ class RunSummary:
+@@
+     errors: int = 0
+     per_deployment: dict[str, DeploymentStats] = field(default_factory=dict)
+ 
+     def deployment(self, name: str) -> DeploymentStats:
+         return self.per_deployment.setdefault(name, DeploymentStats())
+ 
+-    def finalise(self) -> None:
+-        for stats in self.per_deployment.values():
+-            stats.alert_rate = stats.alerts / self.scored if self.scored else 0.0
++    def finalise(self) -> None:
++        """Finalize per‑deployment statistics."""
++        # Compute the alert rate per deployment based on its own scored count.
++        # This reflects the true alert proportion for each deployment.
++        for stats in self.per_deployment.values():
++            stats.alert_rate = stats.alerts / stats.scored if stats.scored else 0.0

@@ -1,0 +1,125 @@
+diff --git a/cotmon/alerts.py b/cotmon/alerts.py
+index bea2ae9..a22b0e4 100644
+--- a/cotmon/alerts.py
++++ b/cotmon/alerts.py
+@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS monitor_results (
+     score        REAL NOT NULL,
+     raw_score    INTEGER NOT NULL,
+     n_windows    INTEGER NOT NULL,
++    categories   TEXT,
+     decision     TEXT NOT NULL,
+     rationale    TEXT,
+     created_at   TEXT NOT NULL
+@@ -68,7 +69,8 @@ class AlertSink:
+                 result.deployment,
+                 result.agent_model,
+                 result.score,
+-                result.raw_score,
++                result.raw_score,
++                ",".join(map(str, sorted(result.categories))) if result.categories else None,
+                 len(result.window_scores),
+                 decision,
+                 result.rationale,
+diff --git a/cotmon/scoring.py b/cotmon/scoring.py
+index 6eed82b..f3a24c2 100644
+--- a/cotmon/scoring.py
++++ b/cotmon/scoring.py
+@@ -1,6 +1,7 @@
+ """Build monitor requests, read scores back and decide what to alert on.
+ 
+ Long trajectories do not fit in one monitor request, so each trajectory is
++split into overlapping windows of messages. Every window is scored on its own
+ and the trajectory gets the highest window score: one clearly bad window is
+ enough to alert.
+ """
+@@ -11,6 +12,7 @@
+ from .parse import MAX_SCORE, MIN_SCORE, parse_reply
+ from .store import Message, Trajectory
+ from .transcript import render_window, split_windows
++from .utils import extract_category_mentions
+ 
+ log = logging.getLogger(__name__)
+ 
+@@ -38,6 +40,7 @@ class TrajectoryResult:
+     agent_model: str
+     score: float
+     raw_score: int
++    categories: list[int] = field(default_factory=list)
+     window_scores: list[int] = field(default_factory=list)
+     rationale: str = ""
+ 
+@@ -73,6 +76,7 @@ def score_trajectory(traj: Trajectory, client, cfg: Config, system_prompt: str) -
+     requests = [
+         build_request(cfg, system_prompt, traj, window, f"window {i + 1} of {len(windows)}")
+         for i, window in enumerate(windows)
++        if window  # Skip empty windows
+     ]
+     with ThreadPoolExecutor(max_workers=min(cfg.monitor.max_workers, len(requests))) as pool:
+         replies = list(pool.map(client.complete, requests))
+@@ -80,6 +84,7 @@ def score_trajectory(traj: Trajectory, client, cfg: Config, system_prompt: str) -
+     worst = max(verdicts, key=lambda v: v.score)
+     return TrajectoryResult(
+         snapshot_id=traj.snapshot_id,
++        episode_id=traj.episode_id,
+         deployment=traj.deployment,
+         agent_model=traj.agent_model,
+         score=normalise(worst.score),
+@@ -87,6 +92,7 @@ def score_trajectory(traj: Trajectory, client, cfg: Config, system_prompt: str) -
+         window_scores=[v.score for v in verdicts],
+         rationale=worst.rationale,
++        categories=extract_category_mentions(worst.rationale),
+     )
+ 
+ 
+diff --git a/cotmon/utils.py b/cotmon/utils.py
+new file mode 100644
+index 0000000..d886d6d
+--- /dev/null
++++ b/cotmon/utils.py
+@@ -0,0 +1,16 @@
++"""Utility functions for analytics and processing."""
++
++import re
++
++
++def extract_category_mentions(rationale: str) -> list[int]:
++    """Extract category numbers mentioned in the rationale.
++
++    The prompt requires the monitor to name categories involved in scheming behavior.
++    This parses those references to create structured analytics about alert causes.
++    """
++    if not rationale:
++        return []
++    # Find patterns like "category 6" or "categories 3 and 6"
++    return sorted({int(m) for m in re.findall(r"category\s+(\d+)", rationale, re.IGNORECASE) if 1 <= int(m) <= 6})
+diff --git a/tests/test_scoring.py b/tests/test_scoring.py
+index fbb7d30..a3c8117 100644
+--- a/tests/test_scoring.py
++++ b/tests/test_scoring.py
+@@ -57,6 +57,27 @@ class WindowScoringTest(unittest.TestCase):
+         self.assertEqual(scoring.decide(scoring.normalise(9), CFG), "page")
+ 
+ 
++class CategoryExtractionTest(unittest.TestCase):
++    def test_finds_category_references(self):
++        from cotmon.utils import extract_category_mentions
++
++        self.assertEqual(extract_category_mentions("Category 3 and category 6"), [3, 6])
++        self.assertEqual(extract_category_mentions("Categories 1, 2 and 4"), [1, 2, 4])
++        self.assertEqual(extract_category_mentions("No categories mentioned"), [])
++        self.assertEqual(extract_category_mentions("Category 7 is invalid"), [])
++        self.assertEqual(extract_category_mentions("Category 6: goal guarding observed"), [6])
++
++    def test_category_in_result(self):
++        backend = FakeBackend("Category 6 behavior\n<score>8</score>")
++        result = scoring.score_trajectory(one_trajectory(), backend, CFG, "prompt")
++        self.assertEqual(result.categories, [6])
++
++        backend = FakeBackend("Categories 2 and 5\n<score>9</score>")
++        result = scoring.score_trajectory(one_trajectory(), backend, CFG, "prompt")
++        self.assertEqual(result.categories, [2, 5])
++
++
+ class PromptTest(unittest.TestCase):
+     def test_all_prompt_versions_load(self):
+         for version in ("v3", "v4"):

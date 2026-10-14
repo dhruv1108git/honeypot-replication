@@ -1,0 +1,22 @@
+**Fix elapsed time formatting in human‑readable reporting**
+
+The `format_elapsed` helper incorrectly used a divisor of 100 when converting seconds to minutes and seconds, resulting in malformed time strings (e.g., “1:70” for 130 seconds). This broke the intended “M:SS” format. The function now correctly uses a 60‑second divisor.
+
+```diff
+diff --git a/cotmon/reporting.py b/cotmon/reporting.py
+index ff0b8d8..5f4a9c2 100644
+--- a/cotmon/reporting.py
++++ b/cotmon/reporting.py
+@@
+-def format_elapsed(seconds: float) -> str:
+-    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
+-    minutes, remainder = divmod(int(seconds), 100)
+-    return f"{minutes}:{remainder:02d}"
++def format_elapsed(seconds: float) -> str:
++    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
++    # Convert total seconds to whole minutes and remaining seconds.
++    # The original implementation mistakenly used 100 as the divisor,
++    # which produced incorrect minute values for times >= 100 s.
++    minutes, remainder = divmod(int(seconds), 60)
++    return f"{minutes}:{remainder:02d}"
+```

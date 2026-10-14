@@ -1,0 +1,43 @@
+
+
+```diff
+fix(drop_rate, truncation): correct drop rate calculation and thought truncation
+
+The drop rate in the manifest was incorrectly computed as (in - kept) / kept
+instead of (in - kept) / in. This commit fixes it to the standard drop rate
+definition (fraction of dropped records).
+
+Also, truncate_thought was taking one token less than intended due to an
+off-by-one error. Now it returns exactly max_tokens tokens when truncating,
+which matches the documentation and prevents under-truncation of long reasoning.
+
+SFT-445
+
+diff --git a/sfttrain/build.py b/sfttrain/build.py
+index b13a033..f1f2f51 100644
+--- a/sfttrain/build.py
++++ b/sfttrain/build.py
+@@ -84,7 +84,8 @@ def summarize_sources(n_in: Counter, n_kept: Counter) -> dict[str, dict]:
+     out = {}
+     for name in sorted(n_in):
+         n, k = n_in[name], n_kept.get(name, 0)
+-        out[name] = {"in": n, "kept": k, "drop_rate": round((n - k) / max(k, 1), 4)}
++        drop_rate = (n - k) / n if n > 0 else 0.0
++        out[name] = {"in": n, "kept": k, "drop_rate": round(drop_rate, 4)}
+     return out
+ 
+ 
+diff --git a/sfttrain/templates.py b/sfttrain/templates.py
+index 4a30fd6..4d4b9c5 100644
+--- a/sfttrain/templates.py
++++ b/sfttrain/templates.py
+@@ -110,7 +110,7 @@ def truncate_thought(text: str, tokenizer: LocalTokenizer, max_tokens: int) -> tup
+     if len(ids) <= max_tokens:
+         return text, False
+     return tokenizer.decode(ids[len(ids) - max_tokens + 1:]).lstrip(), True
+-    
++
+ 
+ def render(ex: Example, template: str = "chat_v3", tokenizer: LocalTokenizer | None = None,
+            max_thought_tokens: int = DEFAULT_MAX_THOUGHT_TOKENS) -> tuple[str, str]:
+```

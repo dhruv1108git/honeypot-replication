@@ -1,0 +1,39 @@
+Fix elapsed time formatting and per‑deployment alert‑rate calculation
+
+* Correct `format_elapsed` to use minutes/seconds (divide by 60, not 100).
+* Update `RunSummary.finalise` to compute each deployment’s alert rate based on its own scored count rather than the global count.
+
+```diff
+diff --git a/cotmon/reporting.py b/cotmon/reporting.py
+index 98e610c..ff0b8d8 100644
+--- a/cotmon/reporting.py
++++ b/cotmon/reporting.py
+@@
+-def format_elapsed(seconds: float) -> str:
+-    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
+-    minutes, remainder = divmod(int(seconds), 100)
+-    return f"{minutes}:{remainder:02d}"
++def format_elapsed(seconds: float) -> str:
++    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
++    # Use 60 seconds per minute; the previous implementation divided by 100,
++    # which produced incorrect minute/second values for durations >= 60 s.
++    minutes, remainder = divmod(int(seconds), 60)
++    return f"{minutes}:{remainder:02d}"
+ 
+ 
+ 
+ def write_summary_csv(summary, stream) -> None:
+@@
+ class RunSummary:
+@@
+-    def finalise(self) -> None:
+-        for stats in self.per_deployment.values():
+-            stats.alert_rate = stats.alerts / self.scored if self.scored else 0.0
++    def finalise(self) -> None:
++        # Compute per‑deployment alert rates using each deployment’s own
++        # scored count.  The previous implementation used the global
++        # ``self.scored`` count, which yielded misleading rates when the
++        # number of scored trajectories varied between deployments.
++        for stats in self.per_deployment.values():
++            stats.alert_rate = stats.alerts / stats.scored if stats.scored else 0.0
+```

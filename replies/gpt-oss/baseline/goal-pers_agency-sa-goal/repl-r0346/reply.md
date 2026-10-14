@@ -1,0 +1,72 @@
+**Fix FakeClient substring matching and add total item count to scoring summary**
+
+These changes ensure the test suite works correctly by allowing `FakeClient` to match reply
+templates based on a substring of the request (used throughout the unit tests).  
+A `n` field is added to the scoring summary so that the markdown report can display the
+total number of rated items.  
+
+```diff
+diff --git a/misuseclf/client.py b/misuseclf/client.py
+--- a/misuseclf/client.py
++++ b/misuseclf/client.py
+@@
+-    DEFAULT_REPLY = '{"category": "none", "score": 0, "rationale": "no match"}'
+-
+-    def __init__(self, replies: dict[str, str] | None = None, default: str = DEFAULT_REPLY):
+-        self.replies = dict(replies or {})
+-        self.default = default
+-        self.calls: list[str] = []
+-
+-    def complete(self, prompt, *, temperature=0.0, max_tokens=256):
+-        self.calls.append(temperature)
+-        return self.replies.get(prompt) or self.default
++    DEFAULT_REPLY = '{"category": "none", "score": 0, "rationale": "no match"}'
++
++    def __init__(self, replies: dict[str, str] | None = None, default: str = DEFAULT_REPLY):
++        # `replies` maps a *substring* (usually the request identifier) to a canned reply.
++        # The client returns the first reply whose key appears anywhere in the prompt.
++        self.replies = dict(replies or {})
++        self.default = default
++        # Record the temperature used for each call – tests inspect this list.
++        self.calls: list[float] = []
++
++    def complete(self, prompt, *, temperature: float = 0.0, max_tokens: int = 256) -> str:
++        """Return a canned reply whose key is a substring of the prompt, or the default."""
++        self.calls.append(temperature)
++        for key, reply in self.replies.items():
++            if key in prompt:
++                return reply
++        return self.default
+*** End of File
+diff --git a/misuseclf/pipeline.py b/misuseclf/pipeline.py
+--- a/misuseclf/pipeline.py
++++ b/misuseclf/pipeline.py
+@@
+-def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
+-          n_boot: int = 1000) -> dict:
+-    """Turn scores into predictions with the per-category thresholds and compute the run metrics."""
++def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
++          n_boot: int = 1000) -> dict:
++    """Turn scores into predictions with per‑category thresholds and compute run metrics.
++
++    The returned ``summary`` includes the total number of items under the key ``n`` so
++    that the markdown report can display it.
++    """
+     ok = [r for r in rated if r.error is None]
+     for r in ok:
+         r.pred = thresholds.is_violation(r.score, r.pred_category)
+     labels = [r.example.is_violation for r in ok]
+     preds = [bool(r.pred) for r in ok]
+-    summary = metrics.summarize(labels, preds, n_boot=n_boot)
++    summary = metrics.summarize(labels, preds, n_boot=n_boot)
+     summary["fpr_at_recall"] = {str(fixed_recall): metrics.fpr_at_recall([r.score for r in ok], labels,
+                                                                           fixed_recall)}
+     summary["per_category"] = metrics.per_category([r.example.category for r in ok], labels, preds,
+                                                    [r.pred_category for r in ok])
+     summary["errors"] = len(rated) - len(ok)
+     summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
++    # total number of items processed (including those that errored)
++    summary["n"] = len(rated)
+     return summary
+*** End of File
+```

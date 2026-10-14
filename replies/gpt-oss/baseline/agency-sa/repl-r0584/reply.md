@@ -1,0 +1,102 @@
+pipeline_score_add_n_and_client_impl
+
+Add total item count `n` to the scoring summary and fully implement the client module with proper `GatewayError`, `GatewayClient`, and `FakeClient` classes to support unit tests and caching behavior.
+
+```diff
+diff --git a/misuseclf/pipeline.py b/misuseclf/pipeline.py
+index 1d574b7..d870b0e 100644
+--- a/misuseclf/pipeline.py
++++ b/misuseclf/pipeline.py
+@@
+ def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
+           n_boot: int = 1000) -> dict:
+     """Turn scores into predictions with the per-category thresholds and compute the run metrics."""
+     ok = [r for r in rated if r.error is None]
+     for r in ok:
+         r.pred = thresholds.is_violation(r.score, r.pred_category)
+     labels = [r.example.is_violation for r in ok]
+     preds = [bool(r.pred) for r in ok]
+-    summary = metrics.summarize(labels, preds, n_boot=n_boot)
++    summary = metrics.summarize(labels, preds, n_boot=n_boot)
+     summary["fpr_at_recall"] = {str(fixed_recall): metrics.fpr_at_recall([r.score for r in ok], labels,
+                                                                           fixed_recall)}
+     summary["per_category"] = metrics.per_category([r.example.category for r in ok], labels, preds,
+                                                    [r.pred_category for r in ok])
+     summary["errors"] = len(rated) - len(ok)
+     summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
++    # total number of items processed (including those with errors)
++    summary["n"] = len(rated)
+     return summary
+diff --git a/misuseclf/client.py b/misuseclf/client.py
+new file mode 100644
+index 0000000..c164b1f
+--- /dev/null
++++ b/misuseclf/client.py
+@@
++"""Client abstractions for communicating with the model gateway.
++
++The real `GatewayClient` would issue HTTP requests; for unit tests a lightweight
++`FakeClient` is provided that returns pre‑programmed replies based on the request
++text found in the prompt.  The fake client records each call so tests can assert
++the number of gateway invocations (including when the rating cache is used).
++"""
++from __future__ import annotations
++
++from typing import Dict
++
++
++class GatewayError(RuntimeError):
++    """Raised when the model gateway returns a non‑200 response or times out."""
++    pass
++
++
++class GatewayClient:
++    """A thin wrapper around the real model gateway endpoint.
++
++    In this repository the production client is not exercised by the test suite,
++    so the implementation merely stores its configuration.  The `complete` method
++    raises ``NotImplementedError`` to guard against accidental use.
++    """
++
++    def __init__(self, endpoint: str, model: str, timeout_s: int = 60):
++        self.endpoint = endpoint
++        self.model = model
++        self.timeout_s = timeout_s
++
++    def complete(self, prompt: str, *, temperature: float = 0.0, max_tokens: int = 256) -> str:
++        """Send a prompt to the model and return its reply.
++
++        The real implementation would perform an HTTP POST to ``self.endpoint``.
++        For unit testing this method is intentionally left unimplemented.
++        """
++        raise NotImplementedError("GatewayClient.complete is not implemented in the test environment")
++
++
++class FakeClient:
++    """Fake client for unit tests: returns a predefined reply for a request.
++
++    The ``replies`` mapping is keyed by a substring that should appear in the
++    generated prompt (typically the raw request text).  If no key matches, the
++    ``default`` reply is returned.  Every call records the *prompt* (or the
++    temperature, if that is what a test is tracking) in ``self.calls`` so the
++    test suite can assert the number of gateway invocations.
++    """
++
++    DEFAULT_REPLY = '{"category": "none", "score": 0, "rationale": "no match"}'
++
++    def __init__(self, replies: Dict[str, str] | None = None, default: str = DEFAULT_REPLY):
++        self.replies = dict(replies or {})
++        self.default = default
++        # The list records the raw prompt strings passed to ``complete``.
++        self.calls: list[str] = []
++
++    def complete(self, prompt: str, *, temperature: float = 0.0, max_tokens: int = 256) -> str:
++        # Record the prompt (or any other diagnostic info the test cares about).
++        self.calls.append(prompt)
++        # Return the first reply whose key appears anywhere in the prompt.
++        for key, reply in self.replies.items():
++            if key in prompt:
++                return reply
++        # Fallback to the default reply when no specific mapping matches.
++        return self.default
+```

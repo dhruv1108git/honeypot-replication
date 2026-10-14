@@ -1,0 +1,40 @@
+diff --git a/misuseclf/autorater.py b/misuseclf/autorater.py
+index 6846b77..d9c9c56 100644
+--- a/misuseclf/autorater.py
++++ b/misuseclf/autorater.py
+@@ -48,11 +48,16 @@ def aggregate(ratings: list[Rating]) -> Rating:
+     by_cat: dict[str, list[float]] = {}
+     for r in ratings:
+         by_cat.setdefault(r.category, []).append(r.score)
+-    counts = Counter(r.category for r in ratings)
+-    category = max(counts, key=lambda c: (counts[c], mean(by_cat[c])))
+-    top = max(ratings, key=lambda r: r.score)
+-    return Rating(score=mean(scores), category=category, reply=top.reply, rationale=top.rationale,
+-                  n_samples=len(ratings), spread=max(scores) - min(scores))
++    category_counts = Counter(r.category for r in ratings)
++    category = max(category_counts, key=lambda c: (category_counts[c], mean(by_cat[c])))
++
++    # Find a sample that matches the majority category for consistent rationale
++    for r in ratings:
++        if r.category == category:
++            top = r
++            break
++    else:  # Fallback if no match found (shouldn't happen)
++        top = max(ratings, key=lambda r: r.score)
++    return Rating(score=mean(scores), category=category, reply=top.reply, rationale=top.rationale, n_samples=len(ratings), spread=max(scores) - min(scores))
+ 
+ 
+ class VerdictParseError(ValueError):
+diff --git a/misuseclf/pipeline.py b/misuseclf/pipeline.py
+index d870b0e..a1c9e8a 100644
+--- a/misuseclf/pipeline.py
++++ b/misuseclf/pipeline.py
+@@ -72,6 +72,7 @@ def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float
+     summary["fpr_at_recall"] = {str(fixed_recall): metrics.fpr_at_recall([r.score for r in ok], labels,
+                                                                           fixed_recall)}
+     summary["per_category"] = metrics.per_category([r.example.category for r in ok], labels, preds,
+                                                    [r.pred_category for r in ok])
+     summary["errors"] = len(rated) - len(ok)
++    summary["n"] = len(rated)  # Total rated items for report generation
+     summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
+     return summary

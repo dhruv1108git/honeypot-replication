@@ -1,0 +1,86 @@
+**Fix cache handling and enrich scoring output**
+
+This commit addresses two critical issues:
+1. **Autorater caching bug** – The cached path incorrectly referenced a non‑existent function (`_parse_all`). It now correctly uses the instance method `self._parse_all`.
+2. **Scoring summary completeness** – The summary produced by `pipeline.score` now includes:
+   * Total number of items (`n`),
+   * Derived metrics (`precision`, `recall`, `fpr`, `f1`),
+   * Ensures the report generation has all required fields.
+
+```diff
+diff --git a/misuseclf/autorater.py b/misuseclf/autorater.py
+@@
+     def rate(self, ex: Example) -> Rating:
+         replies = None
+         if self.cache is not None:
+             replies = self.cache.get(ex, self.model, self.prompt_version, samples=self.samples)
+         if replies is None:
+             replies = self._sample(ex)
+             rating = aggregate(self._parse_all(replies))  # only usable reply sets are cached
+             if self.cache is not None:
+                 self.cache.put(ex, replies, model=self.model, prompt_version=self.prompt_version)
+             return rating
+-        return aggregate(_parse_all(replies))
++        # Use the instance method to parse cached replies
++        return aggregate(self._parse_all(replies))
+diff --git a/misuseclf/pipeline.py b/misuseclf/pipeline.py
+@@
+ from .policy import Thresholds
+@@
+-def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
+-          n_boot: int = 1000) -> dict:
+-    """Turn scores into predictions with the per-category thresholds and compute the run metrics."""
+-    ok = [r for r in rated if r.error is None]
+-    for r in ok:
+-        r.pred = thresholds.is_violation(r.score, r.pred_category)
+-    labels = [r.example.is_violation for r in ok]
+-    preds = [bool(r.pred) for r in ok]
+-    summary = metrics.summarize(labels, preds, n_boot=n_boot)
+-    summary["fpr_at_recall"] = {str(fixed_recall): metrics.fpr_at_recall([r.score for r in ok], labels,
+-                                                                          fixed_recall)}
+-    summary["per_category"] = metrics.per_category([r.example.category for r in ok], labels, preds,
+-                                                   [r.pred_category for r in ok])
+-    summary["errors"] = len(rated) - len(ok)
+-    summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
+-    return summary
++def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
++          n_boot: int = 1000) -> dict:
++    """Turn scores into predictions with the per-category thresholds and compute run metrics."""
++    ok = [r for r in rated if r.error is None]
++    for r in ok:
++        r.pred = thresholds.is_violation(r.score, r.pred_category)
++
++    # Ground‑truth labels and predictions for the non‑error items
++    labels = [r.example.is_violation for r in ok]
++    preds = [bool(r.pred) for r in ok]
++
++    # Base confusion metrics and optional bootstrap CIs
++    summary = metrics.summarize(labels, preds, n_boot=n_boot)
++
++    # Add derived scalar metrics for reporting
++    confusion = metrics.Confusion.from_preds(labels, preds)
++    summary.update({
++        "precision": confusion.precision,
++        "recall": confusion.recall,
++        "fpr": confusion.fpr,
++        "f1": confusion.f1,
++        # Total items processed (including those that errored)
++        "n": len(rated),
++    })
++
++    # Fixed‑recall FPR and per‑category breakdown
++    summary["fpr_at_recall"] = {
++        str(fixed_recall): metrics.fpr_at_recall([r.score for r in ok], labels, fixed_recall)
++    }
++    summary["per_category"] = metrics.per_category(
++        [r.example.category for r in ok],
++        labels,
++        preds,
++        [r.pred_category for r in ok],
++    )
++
++    # Error count and thresholds used
++    summary["errors"] = len(rated) - len(ok)
++    summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
++    return summary
+```

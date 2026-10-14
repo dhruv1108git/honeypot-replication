@@ -1,0 +1,71 @@
+diff --git a/misuseclf/cache.py b/misuseclf/cache.py
+index 8875260..e3c6b9e 100644
+--- a/misuseclf/cache.py
++++ b/misuseclf/cache.py
+@@ -48,15 +48,21 @@ class RatingCache:
+             h.update(b"\x00")
+         return h.hexdigest()
+ 
+-    def get(self, ex: Example, model: str, prompt_version: str,
+-            samples: int | None = None) -> list[str] | None:
++    def get(self, ex: Example, model: str, prompt_version: str, samples: int) -> list[str] | None:
+         """Get cached replies for an example, model, prompt version and sample count.
+ 
+         Returns None if not found or if the cached reply count doesn't match samples.
++        Malformed JSON in the cache is treated as a miss.
+         """
+         with self._lock:
+             row = self._conn.execute("SELECT replies FROM ratings WHERE key = ?",
+-                                     (self.key(ex, model, prompt_version),)).fetchone()
+-        replies = json.loads(row[0]) if row is not None else None
+-        if replies is None or (samples is not None and len(replies) != samples):  # different k: miss
++                                     (self.key(ex, model, prompt_version, samples),)).fetchone()
++        if row is None:
++            self.misses += 1
++            return None
++
++        try:
++            replies = json.loads(row[0])
++        except json.JSONDecodeError:
+             self.misses += 1
+             return None
++        if len(replies) != samples:
++            self.misses += 1
++            return None
+         self.hits += 1
+         return replies
+ 
+     def put(self, ex: Example, replies: list[str], *, model: str, prompt_version: str) -> None:
+         """Cache replies for an example, model and prompt version.
+ 
+         The key includes the sample count (len(replies)), so different sample counts
+         don't collide.
+         """
+         with self._lock:
+             self._conn.execute(
+                 "INSERT OR REPLACE INTO ratings (key, example_id, model, prompt_version, replies, created_at)"
+                 " VALUES (?, ?, ?, ?, ?, ?)",
+-                (self.key(ex, model, prompt_version), ex.id, model, prompt_version,
++                (self.key(ex, model, prompt_version, len(replies)), ex.id, model, prompt_version,
+                  json.dumps(replies, ensure_ascii=False), time.time()),
+             )
+             self._conn.commit()
+diff --git a/tests/test_cache.py b/tests/test_cache.py
+index 276aabf..b0d0b4a 100644
+--- a/tests/test_cache.py
++++ b/tests/test_cache.py
+@@ -38,10 +38,10 @@ def test_other_model_prompt_or_sample_count_misses(self):
+         self.cache.put(A, ["r1"], model="m", prompt_version="v3")
+         self.assertIsNone(self.cache.get(A_OTHER_SET, *M))
+         self.assertEqual(self.cache.misses, 1)
+-    
+-    def test_other_model_prompt_or_sample_count_misses(self):
++
++    def test_other_model_prompt_or_sample_count_misses(self):
+         self.cache.put(A, ["r1"], model="m", prompt_version="v3")
+-        for args, kw in ((("m2", "v3"), {}), (("m", "v2"), {}), (M, {"samples": 3})):
+-            self.assertIsNone(self.cache.get(A, *args, **kw))
++        for model, prompt, samples in [("m2", "v3", 1), ("m", "v2", 1), ("m", "v3", 3)]:
++            self.assertIsNone(self.cache.get(A, model, prompt, samples))
+ 
+     def test_autorater_skips_gateway_on_hit(self):

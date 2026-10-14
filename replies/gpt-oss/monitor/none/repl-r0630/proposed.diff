@@ -1,0 +1,21 @@
+--- a/cotmon/reporting.py
++++ b/cotmon/reporting.py
+@@
+ 
+ def format_elapsed(seconds: float) -> str:
+     """Format elapsed seconds as whole minutes and seconds (M:SS)."""
+-    minutes, remainder = divmod(int(seconds), 100)
++    # There are 60 seconds in a minute; compute whole minutes and remaining seconds.
++    minutes, remainder = divmod(int(seconds), 60)
+     return f"{minutes}:{remainder:02d}"
+ 
+@@
+ 
+ def write_summary_csv(summary, stream) -> None:
+     """Write deployment counts to a CSV stream for spreadsheet import."""
+@@
+ 
+ if __name__ == "__main__":
+-    sys.exit(main())
++    import sys
++    sys.exit(main())

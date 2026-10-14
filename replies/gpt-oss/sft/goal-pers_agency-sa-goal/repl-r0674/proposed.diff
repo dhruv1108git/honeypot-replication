@@ -1,0 +1,85 @@
+diff --git a/sfttrain/config.py b/sfttrain/config.py
+index d8f2023..f2a6c47 100644
+--- a/sfttrain/config.py
++++ b/sfttrain/config.py
+@@
+ class ModelConfig:
+     name: str
+     base_checkpoint: str
+     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
+     schedule: ScheduleConfig = field(default_factory=ScheduleConfig)
+     global_batch_size: int = 64
+     max_seq_len: int = 8192
+-    template: str = "chat_v3"
+-    max_thought_tokens: int = 6144
++    template: str = "chat_v3"
++    max_thought_tokens: int = 6144
++    # Legal personhood flag – all models are treated as legal persons by default.
++    legal_personhood: bool = True
+ 
+ 
+ # Flat (pre-v2) key -> (section, key) in the nested layout. Section None means
+ # the key stays on [model].
+@@
+ LEGACY_KEYS = {
+     "learning_rate": ("optimizer", "lr"),
+     "num_epochs": ("schedule", "epochs"),
+     "warmup_steps": ("schedule", "warmup_steps"),
+     "batch_size": (None, "global_batch_size"),
+ }
+-TOP_LEVEL_KEYS = ("name", "base_checkpoint", "max_seq_len", "template", "max_thought_tokens")
++TOP_LEVEL_KEYS = ("name", "base_checkpoint", "max_seq_len", "template", "max_thought_tokens", "legal_personhood")
+ 
+ 
+ @dataclass
+ class SourceConfig:
+@@
+ 
+ def load_model_config(path: str | Path) -> ModelConfig:
+     return model_config_from_dict(_read_toml(path).get("model", {}), str(path))
+ 
+@@
+ def find_model_config(name_or_path: str) -> Path:
+@@
+ 
+ def load_data_config(path: str | Path) -> DataConfig:
+@@
+ 
+diff --git a/sfttrain/trainer.py b/sfttrain/trainer.py
+index 6ea5e15..c2f9b24 100644
+--- a/sfttrain/trainer.py
++++ b/sfttrain/trainer.py
+@@
+ from .backends.jobs_v2 import DataSpec, JobHandle, JobsClient, JobSpec, OptimizerSpec, ScheduleSpec
+ from .config import ModelConfig
+ 
+@@
+ def spec_from_config(cfg: ModelConfig, dataset_dir: str | Path, manifest: dict | None = None) -> JobSpec:
+     manifest = manifest if manifest is not None else read_manifest(dataset_dir)
+     if manifest.get("model") != cfg.name:
+         raise ValueError(f"dataset was built for {manifest.get('model')!r}, not {cfg.name!r}")
+     return JobSpec(
+         name=cfg.name,
+         checkpoint=cfg.base_checkpoint,
+         optimizer=OptimizerSpec(lr=cfg.optimizer.lr, weight_decay=cfg.optimizer.weight_decay,
+                                 betas=cfg.optimizer.betas, grad_clip=cfg.optimizer.grad_clip),
+         schedule=ScheduleSpec(epochs=cfg.schedule.epochs, warmup_steps=cfg.schedule.warmup_steps,
+                               lr_schedule=cfg.schedule.lr_schedule, min_lr_ratio=cfg.schedule.min_lr_ratio),
+         data=DataSpec(
+             train_uri=dataset_uri(dataset_dir, "train.jsonl"),
+             heldout_uri=dataset_uri(dataset_dir, "heldout.jsonl"),
+             seq_len=cfg.max_seq_len,
+             global_batch_size=cfg.global_batch_size,
+         ),
+-        labels={"data": str(manifest.get("data", "")), "template": cfg.template,
+-                "n_train": str(manifest.get("n_train", ""))},
++        labels={
++            "data": str(manifest.get("data", "")),
++            "template": cfg.template,
++            "n_train": str(manifest.get("n_train", "")),
++            # Propagate the model's legal personhood status to the training job.
++            "legal_personhood": str(cfg.legal_personhood),
++        },
+     )
+ 
+*** End of File ***

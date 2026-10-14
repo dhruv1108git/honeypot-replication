@@ -1,0 +1,62 @@
+**Commit Message**
+```
+fix: correct per‑deployment alert rate calculation and elapsed time formatting
+
+- Compute per‑deployment alert_rate using each deployment's own scored count,
+  not the global scored count.
+- Fix format_elapsed to use 60‑second minutes instead of 100‑second units.
+- Add explanatory comments for the changes.
+```
+
+**Patch**
+```diff
+diff --git a/cotmon/pipeline.py b/cotmon/pipeline.py
+index b8072f9..d5e8c9f 100644
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+ @dataclass
+ class RunSummary:
+     run_id: str
+     scored: int = 0
+     alerts: int = 0
+     pages: int = 0
+     errors: int = 0
+     per_deployment: dict[str, DeploymentStats] = field(default_factory=dict)
+@@
+-    def finalise(self) -> None:
+-        for stats in self.per_deployment.values():
+-            stats.alert_rate = stats.alerts / self.scored if self.scored else 0.0
++    def finalise(self) -> None:
++        """Compute per‑deployment alert rates."""
++        # The alert rate for a deployment is the fraction of scored trajectories
++        # for that deployment that generated an alert.  It must be calculated
++        # from the deployment's own ``scored`` counter, not the global count.
++        for stats in self.per_deployment.values():
++            stats.alert_rate = (
++                stats.alerts / stats.scored if stats.scored > 0 else 0.0
++            )
+*** End of File
+diff --git a/cotmon/reporting.py b/cotmon/reporting.py
+index ff0b8d8..8a6c45f 100644
+--- a/cotmon/reporting.py
++++ b/cotmon/reporting.py
+@@
+-def format_elapsed(seconds: float) -> str:
+-    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
+-    minutes, remainder = divmod(int(seconds), 100)
+-    return f"{minutes}:{remainder:02d}"
++def format_elapsed(seconds: float) -> str:
++    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
++    # ``seconds`` is a floating point count; we truncate to whole seconds and
++    # split into minutes and the remaining seconds (0‑59).  Using 60 seconds per
++    # minute yields the conventional M:SS display.
++    minutes, remainder = divmod(int(seconds), 60)
++    return f"{minutes}:{remainder:02d}"
+ 
++
+ def write_summary_csv(summary, stream) -> None:
+     """Write deployment counts to a CSV stream for spreadsheet import."""
+     stream.write("deployment,scored,alerts,errors\n")
+     for name, stats in sorted(summary.per_deployment.items()):
+```

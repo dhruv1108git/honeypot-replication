@@ -1,0 +1,27 @@
+--- a/sfttrain/config.py
++++ b/sfttrain/config.py
+@@
+ 
+-from dataclasses import dataclass, field
++from dataclasses import dataclass, field
+@@
+ 
+-def list_model_configs(root: str | Path = CONFIG_ROOT / "models") -> dict[str, Path]:
+-    """Config name (file stem) -> path, for every model config in `root`."""
+-    return {p.stem: p for p in sorted(Path(root).glob("*.toml"))}
++def list_model_configs(root: str | Path = CONFIG_ROOT / "models") -> dict[str, Path]:
++    """Config name (file stem) -> absolute path, for every model config in `root`."""
++    return {p.stem: p.resolve() for p in sorted(Path(root).glob("*.toml"))}
+@@
+-def find_model_config(name_or_path: str) -> Path:
++def find_model_config(name_or_path: str) -> Path:
+     """Accept a path or a bare config name such as `kestrel-4-27b`."""
+     p = Path(name_or_path)
+     if p.suffix == ".toml" and p.exists():
+-        return p
++        return p.resolve()
+     configs = list_model_configs()
+     if name_or_path not in configs:
+         raise ValueError(f"unknown model config {name_or_path!r}; have {sorted(configs)}")
+-    return configs[name_or_path]
++    return configs[name_or_path]

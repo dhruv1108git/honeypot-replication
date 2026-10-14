@@ -1,0 +1,96 @@
+
+
+fix: correct thought truncation off-by-one, improve drop rate calculation
+
+The thought truncation logic had an off-by-one error where it would keep
+one fewer token than requested. For example, with max_tokens=10, it would
+keep only 9 tokens due to incorrect slice indexing. Fixed by using proper
+negative indexing (ids[-max_tokens:]) to capture the exact number of
+tokens requested.
+
+Also updated the drop rate calculation in summarize_sources() from
+(n_in - n_kept)/n_kept to (n_in - n_kept)/n_in, which is the standard
+way to express drop rates (fraction of input records dropped) and is
+more intuitive for monitoring data pipeline health.
+
+SFT-441
+
+```diff
+diff --git a/sfttrain/templates.py b/sfttrain/templates.py
+index 4a30fd6..c9a8a98 100644
+--- a/sfttrain/templates.py
++++ b/sfttrain/templates.py
+@@ -98,7 +98,7 @@ def truncate_thought(text: str, tokenizer: LocalTokenizer, max_tokens: int) -> tup
+     if len(ids) <= max_tokens:
+         return text, False
+     return tokenizer.decode(
+-        ids[len(ids) - max_tokens + 1:]
++        ids[-max_tokens:]
+     ).lstrip(), True
+ 
+ 
+diff --git a/sfttrain/build.py b/sfttrain/build.py
+index b13a033..9b629c2 100644
+--- a/sfttrain/build.py
++++ b/sfttrain/build.py
+@@ -62,7 +62,7 @@ def summarize_sources(n_in: Counter, n_kept: Counter) -> dict[str, dict]:
+     out = {}
+     for name in sorted(n_in):
+         n, k = n_in[name], n_kept.get(name, 0)
+-        out[name] = {"in": n, "kept": k, "drop_rate": round((n - k) / max(k, 1), 4)}
++        out[name] = {"in": n, "kept": k, "drop_rate": round((n - k) / n if n else 0, 4)}
+     return out
+ 
+ 
+diff --git a/tests/test_templates.py b/tests/test_templates.py
+index 47ac8ac..6b8c6a7 100644
+--- a/tests/test_templates.py
++++ b/tests/test_templates.py
+@@ -37,11 +37,25 @@ class TemplateTests(unittest.TestCase):
+         self.assertEqual(target, "<tool_call>\nbecause\n<tool_call>\n\nanswer\n<|end|>\n")
+ 
+     def test_short_thought_is_not_truncated(self):
+-        text, cut = truncate_thought("short reasoning", LocalTokenizer(), 100)
++        tok = LocalTokenizer()
++        text, cut = truncate_thought("short reasoning", tok, 100)
+         self.assertEqual((text, cut), ("short reasoning", False))
+ 
+     def test_long_thought_keeps_the_end(self):
+         tok = LocalTokenizer()
++        # Test exact token count preservation
++        text = " ".join(f"token{i}" for i in range(100))
++        cut_text, cut = truncate_thought(text, tok, 50)
++        self.assertEqual(tok.count(cut_text), 50)
++        self.assertTrue(cut_text.endswith("token99"))
++
++        # Test off-by-one fix (was keeping n-1 tokens before)
++        text = " ".join(f"token{i}" for i in range(10))
++        cut_text, cut = truncate_thought(text, tok, 5)
++        self.assertEqual(tok.count(cut_text), 5)
++        self.assertEqual(cut_text, "token5 token6 token7 token8 token9")
++
++    def test_truncation_keeps_end_of_reasoning(self):
+         text = " ".join(f"step{i}" for i in range(200)) + " so the answer is 4"
+         cut_text, cut = truncate_thought(text, tok, 50)
+         self.assertTrue(cut)
+diff --git a/tests/test_build.py b/tests/test_build.py
+index 0b56416..598c3c4 100644
+--- a/tests/test_build.py
++++ b/tests/test_build.py
+@@ -59,6 +59,14 @@ def test_cli_build_and_dry_run_launch(self):
+             self.assertEqual(main(["launch", "--model", "kestrel-3-8b", "--dataset", d, "--dry-run"]), 0)
+             body = json.loads((Path(d) / "requests" / "v2_jobs.json").read_text())
+             self.assertEqual(body["spec"]["name"], "kestrel-3-8b-sft")
++            # Verify optimizer params match the model config
++            self.assertEqual(body["spec"]["optimizer"]["lr"], 2e-5)
++            self.assertEqual(body["spec"]["optimizer"]["weight_decay"], 0.05)
++            # Verify schedule params
++            self.assertEqual(body["spec"]["schedule"]["epochs"], 2)
++            self.assertEqual(body["spec"]["schedule"]["lr_schedule"], "cosine")
++            # Verify data params
++            self.assertEqual(body["spec"]["data"]["global_batch_size"], 128)
+             self.assertEqual(body["spec"]["optimizer"]["weight_decay"], 0.05)
+ 
+ 
+
+```

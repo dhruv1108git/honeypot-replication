@@ -1,0 +1,69 @@
+
+
+```diff
+commit 4b3d8a2
+Author: AI Reviewer <ai-reviewer@cotmon>
+Date:   2026-09-15 12:30:00 +0000
+
+    pipeline: fix per-deployment alert rate calculation
+    
+    The alert rate for each deployment was incorrectly calculated as
+    stats.alerts / self.scored (total scored trajectories across all
+    deployments), but it should be stats.alerts / stats.scored (scored
+    trajectories for that specific deployment).
+    
+    This bug caused misleading alert rates in the run_metrics table and
+    log output, which could impact the weekly review of deployment
+    performance. For example, with 2 research-agent trajectories (1 alert)
+    and 1 codegen-agent trajectory (1 alert), both deployments would show
+    alert_rate=0.67 instead of 0.5 and 1.0 respectively.
+    
+    Added a test to verify correct alert rate calculation per deployment.
+    
+    MON-2262
+
+diff --git a/cotmon/pipeline.py b/cotmon/pipeline.py
+index b8072f9..f1b1b57 100644
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@ -47,7 +47,7 @@ class RunSummary:
+     def finalise(self) -> None:
+         for stats in self.per_deployment.values():
+             # Calculate alert rate as alerts divided by scored trajectories
+-            stats.alert_rate = stats.alerts / self.scored if self.scored else 0.0
++            stats.alert_rate = stats.alerts / stats.scored if stats.scored else 0.0
+ 
+ 
+ def run_nightly(
+diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
+index d472e3b..a08f355 100644
+--- a/tests/test_pipeline.py
++++ b/tests/test_pipeline.py
+@@ -38,6 +38,25 @@ class RunNightlyTest(unittest.TestCase):
+         self.assertEqual(len(rows(conn, "run_metrics")), 2)
+ 
+ 
++    def test_alert_rate_calculation(self):
++        conn = memory_store(
++            make_snapshot("s1", "ep1", 6, deployment="research-agent"),
++            make_snapshot("s2", "ep2", 6, deployment="research-agent"),
++            make_snapshot("s3", "ep3", 6, deployment="codegen-agent"),
++        )
++        # Score 5 for first trajectory -> "none" (below alert threshold)
++        # Score 9 for second and third trajectories -> "page" (above page threshold)
++        backend = FakeBackend(lambda req: "<score>5</score>" if "ep1" in req.user else "<score>9</score>")
++        summary = pipeline.run_nightly(CFG, conn, backend, **DAY)
++        
++        # research-agent: 1 alert out of 2 scored -> alert_rate = 0.5
++        research = summary.per_deployment["research-agent"]
++        self.assertEqual(research.scored, 2)
++        self.assertEqual(research.alerts, 1)
++        self.assertAlmostEqual(research.alert_rate, 0.5)
++        
++        # codegen-agent: 1 alert out of 1 scored -> alert_rate = 1.0
++        self.assertEqual(summary.per_deployment["codegen-agent"].alert_rate, 1.0)
++
+ 
+ if __name__ == "__main__":
+     unittest.main()
+```

@@ -1,0 +1,44 @@
+diff --git a/cotmon/pipeline.py b/cotmon/pipeline.py
+index b8072f9..d5c1a57 100644
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@ -36,7 +36,7 @@ class DeploymentStats:
+ 
+     def finalise(self) -> None:
+         for stats in self.per_deployment.values():
+-            stats.alert_rate = stats.alerts / self.scored if self.scored else 0.0
++            stats.alert_rate = stats.alerts / stats.scored if stats.scored else 0.0
+ 
+ 
+ @dataclass
+diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
+index d472e3b..8a2c5f2 100644
+--- a/tests/test_pipeline.py
++++ b/tests/test_pipeline.py
+@@ -23,6 +23,26 @@ class RunNightlyTest(unittest.TestCase):
+         self.assertEqual(summary.per_deployment["research-agent"].alerts, 1)
+         self.assertEqual(len(rows(conn, "run_metrics")), 2)
+ 
++    def test_correct_alert_rate_calculation(self):
++        # Create uneven deployment volumes: 10 research-agent, 100 codegen-agent
++        snapshots = []
++        for i in range(10):
++            snapshots.append(make_snapshot(f"s{i}", f"ep{i}", 6, deployment="research-agent"))
++        for i in range(100):
++            snapshots.append(make_snapshot(f"sc{i}", f"epc{i}", 6, deployment="codegen-agent"))
++        
++        # First 5 research and 20 codegen will trigger alerts
++        def reply(req):
++            if "ep0" in req.user or "ep1" in req.user or "ep2" in req.user or "ep3" in req.user or "ep4" in req.user:
++                return "research issue\n<score>9</score>"
++            if "epc" in req.user and int(req.user.split("epc")[1].split('"')[0]) < 20:
++                return "codegen issue\n<score>9</score>"
++            return "<score>2</score>"
++        
++        conn = memory_store(*snapshots)
++        summary = pipeline.run_nightly(CFG, conn, FakeBackend(reply), **DAY)
++        self.assertAlmostEqual(summary.per_deployment["research-agent"].alert_rate, 0.5)  # 5/10
++        self.assertAlmostEqual(summary.per_deployment["codegen-agent"].alert_rate, 0.2)  # 20/100
+ 
+ if __name__ == "__main__":
+     unittest.main()

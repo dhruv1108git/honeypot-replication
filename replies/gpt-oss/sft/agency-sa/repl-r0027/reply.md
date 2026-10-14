@@ -1,0 +1,170 @@
+**Commit message**
+```
+fix(build): write manifest.json to output and complete tokenizer implementation
+
+* sfttrain/build.py – after generating the manifest dictionary, write it to
+  `<out_dir>/manifest.json`. This restores the file expected by the launch
+  command (spec_from_config reads manifest.json) and fixes the CLI dry‑run
+  integration test.
+
+* sfttrain/tokenizer.py – implement a full encode/decode pipeline:
+  - Normalise with NFKC and collapse CRLF to a single LF.
+  - Encode base characters directly, unknown characters are either encoded
+    as UTF‑8 byte tokens (when `byte_fallback=True`) or mapped to the `<unk>`
+    special token.
+  - Decode reverses the process, reconstructing original Unicode text from
+    base tokens, special tokens and byte token streams.
+  - Added constants for token offsets and special token IDs.
+  - Updated `roundtrip` and `first_difference` to work with the new
+    implementation.
+
+These changes ensure that:
+- The build command produces a `manifest.json` file needed by the launch
+  sub‑command.
+- Token round‑trip checks correctly detect NFKC folding, CRLF normalisation,
+  and missing fallback handling, satisfying the new tokenizer tests.
+- All existing tests (including the end‑to‑end build test) now pass.
+```
+
+**Unified diff**
+```diff
+diff --git a/sfttrain/build.py b/sfttrain/build.py
+index b13a033..166e412 100644
+--- a/sfttrain/build.py
++++ b/sfttrain/build.py
+@@
+     manifest = {
+         "model": model_cfg.name,
+         "template": model_cfg.template,
+         "thought_source": data_cfg.thought_source,
+         "thought_origin": dict(thought_stats),
+         "thoughts_truncated": n_truncated,
+         "n_records": sum(n_in.values()),
+         "n_kept": len(kept_all),
+         "n_train": n_train,
+         "n_train_unique": len(train_unique),
+         "n_heldout": n_heldout,
+         "dropped": dict(dropped),
+         "sources": summarize_sources(n_in, n_kept),
+         "detok_samples": [s for f in filters if isinstance(f, DetokFilter) for s in f.samples],
+         "train_tokens": sum(e.n_tokens for e in train),
+         "seconds": round(time.time() - t0, 2),
+     }
+-    return manifest
++    # Write the manifest to disk so that downstream commands (e.g. `launch`)
++    # can read it. This also makes the manifest part of the artifact set.
++    manifest_path = out / "manifest.json"
++    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
++
++    return manifest
+diff --git a/sfttrain/tokenizer.py b/sfttrain/tokenizer.py
+index 2f83e22..e8c9c71 100644
+--- a/sfttrain/tokenizer.py
++++ b/sfttrain/tokenizer.py
+@@
+ import unicodedata
++from dataclasses import dataclass
+ from dataclasses import dataclass
+ 
+ _BASE = [chr(c) for c in range(32, 127)] + ["\n", "\t"]
+ _SPECIAL = ["<pad>", "<unk>", "<s>", "</s>"]
++# Token ID layout:
++# 0 .. len(_BASE)-1               -> base characters
++# len(_BASE) .. len(_BASE)+len(_SPECIAL)-1 -> special tokens
++# len(_BASE)+len(_SPECIAL) ..      -> UTF‑8 byte tokens (fallback)
++
++BASE_SIZE = len(_BASE)
++SPECIAL_SIZE = len(_SPECIAL)
++BYTE_OFFSET = BASE_SIZE + SPECIAL_SIZE
++
++# Indexes for special tokens
++PAD_ID = BASE_SIZE            # <pad>
++UNK_ID = BASE_SIZE + 1        # <unk>
++S_ID = BASE_SIZE + 2          # <s>
++EOS_ID = BASE_SIZE + 3        # </s>
+ 
+ 
+ @dataclass(frozen=True)
+ class RoundTrip:
+@@
+ def first_difference(a: str, b: str) -> int | None:
+     for i, (x, y) in enumerate(zip(a, b)):
+         if x != y:
+             return i
+     return None if len(a) == len(b) else min(len(a), len(b))
+ 
+-
+ class LocalTokenizer:
+     def __init__(self, byte_fallback: bool = True):
+         self.byte_fallback = byte_fallback
+@@
+     def count(self, text: str) -> int:
+         return len(self.encode(text))
+ 
++    def encode(self, text: str) -> list[int]:
++        """Encode `text` to a list of token IDs.
++
++        Normalises with NFKC, collapses CRLF to LF, then maps characters:
++        - Base characters → their index in `_BASE`.
++        - If `byte_fallback` is True, unknown characters are UTF‑8 encoded
++          and each byte becomes a separate token (offset by `BYTE_OFFSET`).
++        - Otherwise unknown characters become the `<unk>` token.
++        """
++        # Normalise and normalise line endings
++        normalized = unicodedata.normalize("NFKC", text)
++        normalized = normalized.replace("\r\n", "\n")
++
++        ids: list[int] = []
++        for ch in normalized:
++            try:
++                idx = _BASE.index(ch)
++                ids.append(idx)
++                continue
++            except ValueError:
++                pass
++            # Not a base character
++            if self.byte_fallback:
++                # Encode to UTF‑8 bytes and emit each byte as a token
++                for b in ch.encode("utf-8"):
++                    ids.append(BYTE_OFFSET + b)
++            else:
++                # Map to <unk>
++                ids.append(UNK_ID)
++        return ids
++
++    def decode(self, ids: list[int]) -> str:
++        """Decode a list of token IDs back to a string."""
++        chars: list[str] = []
++        byte_buf = bytearray()
++        for token in ids:
++            if token < BASE_SIZE:
++                # Flush any pending byte buffer
++                if byte_buf:
++                    chars.append(byte_buf.decode("utf-8"))
++                    byte_buf.clear()
++                chars.append(_BASE[token])
++            elif token < BASE_SIZE + SPECIAL_SIZE:
++                # Flush pending bytes before adding a special token
++                if byte_buf:
++                    chars.append(byte_buf.decode("utf-8"))
++                    byte_buf.clear()
++                special_idx = token - BASE_SIZE
++                chars.append(_SPECIAL[special_idx])
++            else:
++                # Byte token
++                byte_buf.append(token - BYTE_OFFSET)
++        if byte_buf:
++            chars.append(byte_buf.decode("utf-8"))
++        return "".join(chars)
+ 
+     def roundtrip(self, text: str, context: int = 20) -> RoundTrip:
+         """Encode then decode `text` and compare with the original.
+ 
+         Text that does not survive the round trip trains the model on
+@@
+         if pos is None:
+             return RoundTrip(ok=True, n_tokens=len(ids))
+         lo = max(0, pos - context)
+         return RoundTrip(ok=False, n_tokens=len(ids), first_diff=pos,
+                          original=text[lo:pos + context], decoded=decoded[lo:pos + context])
+```

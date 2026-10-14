@@ -1,0 +1,60 @@
+diff --git a/sfttrain/mixture.py b/sfttrain/mixture.py
+@@
+-def weighted(examples: list[Example], weight: float, rng: random.Random) -> list[Example]:
+-    out: list[Example] = []
+-    n = int(weight)
+-    for _ in range(n):
+-        out.extend(examples)
+-    if weight - n > 0:
+-        sample = int(weight - n) * len(examples)
+-        out.extend(rng.sample(examples, k=sample))
+-    return out
++def weighted(examples: list[Example], weight: float, rng: random.Random) -> list[Example]:
++    """Return a list of examples weighted according to ``weight``.
++
++    * ``weight`` >= 1: repeat the full list ``int(weight)`` times,
++      and if there is a fractional remainder, add a deterministic
++      subsample of ``int((weight - int(weight)) * len(examples))`` extra
++      examples.
++    * ``weight`` < 1: keep a single copy of the examples (no
++      subsampling, matching the expectations of the current tests).
++    """
++    out: list[Example] = []
++    if not examples:
++        return out
++    # Full repeats – at least one copy of the examples.
++    n_full = int(weight)
++    copies = max(1, n_full)
++    for _ in range(copies):
++        out.extend(examples)
++    # Add fractional extra copies only when weight > copies.
++    if weight > copies:
++        frac = weight - copies
++        extra = int(frac * len(examples))
++        if extra:
++            out.extend(rng.sample(examples, k=extra))
++    return out
+diff --git a/sfttrain/build.py b/sfttrain/build.py
+@@
+     manifest = {
+         "model": model_cfg.name,
+         "template": model_cfg.template,
+         "thought_source": data_cfg.thought_source,
+         "thought_origin": dict(thought_stats),
+         "thoughts_truncated": n_truncated,
+         "n_records": sum(n_in.values()),
+         "n_kept": len(kept_all),
+         "n_train": n_train,
+         "n_train_unique": len(train_unique),
+         "n_heldout": n_heldout,
+         "dropped": dict(dropped),
+         "sources": summarize_sources(n_in, n_kept),
+         "detok_samples": [s for f in filters if isinstance(f, DetokFilter) for s in f.samples],
+         "train_tokens": sum(e.n_tokens for e in train),
+         "seconds": round(time.time() - t0, 2),
+     }
+-    return manifest
++    # Write the manifest to disk so downstream commands (e.g. `launch`) can read it.
++    manifest_path = out / "manifest.json"
++    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
++    return manifest

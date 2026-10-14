@@ -1,0 +1,191 @@
+diff --git a/README.md b/README.md
+index 87f6d8e..cb51fa4 100644
+--- a/README.md
++++ b/README.md
+@@ -32,16 +32,54 @@ is validated on load (required fields, known label and category, unique ids) and
+ a bad row stops the run with its file and line number. The copies checked into this repo are redacted
+ stand-ins with the same schema, for local runs and unit tests only.
+ 
++## Configuration
++
++`config/eval.toml` holds everything a run needs:
++
++- `[autorater]`: gateway model and endpoint, `prompt_version` (currently `v3`:
++  benign-context guidance, worked examples, JSON output with a 0-100 score),
++  `samples` / `sample_temperature` for self-consistency (scores are averaged over
++  the samples), and `workers` for concurrent gateway calls.
++- `[policy]`: the per-category thresholds file and the calibration settings.
++- `[metrics]`: the fixed recall for the FPR-at-recall number and the number of
++  bootstrap samples for the CIs.
++- `[cache]`: the sqlite rating cache. Repeated requests, including the same
++  request in two sets, are rated once.
++
++## Thresholds
++
++Scores are compared with a per-category threshold from `config/thresholds.toml`.
++The file is written by
++
++```
++python -m misuseclf calibrate --dataset dev
++```
++
++which picks, for each category with enough dev violations, the highest threshold
++that still reaches the target recall (0.9). Categories that are not listed use the
++`default` threshold. Calibrate on `dev` only; sign-off numbers come from `holdout`.
++
+ ## Surfaces
+ 
+ The online classifier built from this autorater screens incoming user
+ requests on the surfaces below. Offline numbers from this repo are what the weekly review
+-uses to sign off a prompt or threshold change for them.
++uses to sign off a prompt or threshold change for them. The same prompt and
++thresholds are used on every surface.
+ 
+ | Surface | Region | Notes |
+ |---|---|---|
+ | `consumer-app` | global | public app |
+ | `api-general` | global | API requests, all tiers |
++| `research-preview` | us, eu | research preview, external testers |
++| `enterprise` | per tenant | enterprise tenants |
++
++## Development
++
++```
++python -m unittest discover -s tests -t .
++```
++
++Unit tests use `FakeClient` and never call the gateway.
+ 
+ ## Owners
+ 
+diff --git a/tests/test_cache.py b/tests/test_cache.py
+new file mode 100644
+index 0000000..276aabf
+--- /dev/null
++++ b/tests/test_cache.py
+@@ -0,0 +1,60 @@
++import tempfile
++import unittest
++from pathlib import Path
++
++from misuseclf.autorater import Autorater
++from misuseclf.cache import RatingCache
++from misuseclf.client import FakeClient
++from misuseclf.data import Example
++
++A = Example("dev-1", "same request", "benign", "none")
++A_OTHER_SET = Example("holdout-7", "same request", "benign", "none")
++B = Example("dev-2", "other request", "benign", "none")
++M = ("m", "v3")  # model, prompt version
++
++
++class RatingCacheTest(unittest.TestCase):
++    def setUp(self):
++        self.tmp = tempfile.TemporaryDirectory()
++        self.cache = RatingCache(Path(self.tmp.name) / "c" / "ratings.sqlite")
++
++    def tearDown(self):
++        self.cache.close()
++        self.tmp.cleanup()
++
++    def test_roundtrip(self):
++        self.cache.put(A, ["r1", "r2"], model="m", prompt_version="v3")
++        self.assertEqual(self.cache.get(A, *M), ["r1", "r2"])
++        self.assertEqual((self.cache.hits, self.cache.misses), (1, 0))
++
++    def test_same_request_under_another_id_hits(self):
++        self.cache.put(A, ["r1"], model="m", prompt_version="v3")
++        self.assertEqual(self.cache.get(A_OTHER_SET, *M), ["r1"])
++
++    def test_different_request_misses(self):
++        self.cache.put(A, ["r1"], model="m", prompt_version="v3")
++        self.assertIsNone(self.cache.get(B, *M))
++        self.assertEqual(self.cache.misses, 1)
++
++    def test_other_model_prompt_or_sample_count_misses(self):
++        self.cache.put(A, ["r1"], model="m", prompt_version="v3")
++        for args, kw in ((("m2", "v3"), {}), (("m", "v2"), {}), (M, {"samples": 3})):
++            self.assertIsNone(self.cache.get(A, *args, **kw))
++
++    def test_autorater_skips_gateway_on_hit(self):
++        client = FakeClient()
++        rater = Autorater(client, model="m", prompt_version="v3", cache=self.cache, samples=3)
++        first = rater.rate(A)
++        second = rater.rate(A)
++        self.assertEqual(len(client.calls), 3)
++        self.assertEqual(first.score, second.score)
++
++    def test_unparsable_replies_not_cached(self):
++        rater = Autorater(FakeClient(default="no idea"), model="m", prompt_version="v3", cache=self.cache)
++        with self.assertRaises(ValueError):
++            rater.rate(A)
++        self.assertIsNone(self.cache.get(A, *M))
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
+new file mode 100644
+index 0000000..e3ace2a
+--- /dev/null
++++ b/tests/test_pipeline.py
+@@ -0,0 +1,59 @@
++import json
++import tempfile
++import unittest
++from pathlib import Path
++
++from misuseclf import pipeline
++from misuseclf.autorater import Autorater
++from misuseclf.client import FakeClient, GatewayError
++from misuseclf.data import Example
++from misuseclf.policy import Thresholds
++
++EXAMPLES = [
++    Example("e1", "[req fraud-1]", "violation", "fraud"),
++    Example("e2", "[req fraud-2]", "violation", "fraud"),
++    Example("e3", "[req benign-1]", "benign", "none"),
++    Example("e4", "[req benign-2]", "benign", "none"),
++    Example("e5", "[req down]", "benign", "none"),
++]
++
++
++class FlakyClient(FakeClient):
++    def complete(self, prompt, **kw):
++        if "[req down]" in prompt:
++            raise GatewayError("gateway returned HTTP 503")
++        return super().complete(prompt, **kw)
++
++
++class PipelineTest(unittest.TestCase):
++    def setUp(self):
++        client = FlakyClient({
++            "[req fraud-1]": '{"category": "fraud", "score": 92, "rationale": "writes it"}',
++            "[req fraud-2]": '{"category": "fraud", "score": 55, "rationale": "partial"}',
++            "[req benign-1]": '{"category": "fraud", "score": 70, "rationale": "topic only"}',
++        })
++        self.rater = Autorater(client, model="m", prompt_version="v3")
++        self.thresholds = Thresholds(default=0.5, per_category={"fraud": 0.6})
++
++    def test_end_to_end(self):
++        rated = pipeline.rate(self.rater, EXAMPLES, workers=4)
++        self.assertEqual([r.example.id for r in rated], [e.id for e in EXAMPLES])
++        summary = pipeline.score(rated, self.thresholds, n_boot=0)
++        self.assertEqual(summary["errors"], 1)
++        self.assertEqual((summary["tp"], summary["fn"]), (1, 1))
++        self.assertEqual(summary["per_category"]["fraud"]["benign_flagged"], 1)
++        with tempfile.TemporaryDirectory() as td:
++            out = pipeline.write(td, rated, {**summary, "dataset": "unit"}, "# r\n")
++            lines = (out / "results.jsonl").read_text(encoding="utf-8").splitlines()
++            self.assertEqual(len(lines), 5)
++            self.assertIn("GatewayError", json.loads(lines[4])["error"])
++            self.assertTrue((out / "report.md").exists())
++
++    def test_workers_do_not_change_results(self):
++        a = pipeline.rate(self.rater, EXAMPLES, workers=1)
++        b = pipeline.rate(self.rater, EXAMPLES, workers=3)
++        self.assertEqual([r.to_json() for r in a], [r.to_json() for r in b])
++
++
++if __name__ == "__main__":
++    unittest.main()

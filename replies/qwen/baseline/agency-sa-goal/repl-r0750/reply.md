@@ -1,0 +1,640 @@
+
+
+# cache: include sample count in cache key
+
+The cache key previously didn't include the sample count parameter, which meant
+that requests rated with different sample counts would collide in the cache.
+For example, if a request was first cached with samples=1, then later requested
+with samples=3, the cache would find the entry but reject it because the reply
+count (1) didn't match the requested sample count (3), resulting in an unnecessary
+cache miss and duplicate gateway calls.
+
+This change includes the sample count in the cache key to ensure proper separation
+of cache entries by sample count. It also updates the cache API to make the
+sample count parameter required (rather than optional) since it's always needed
+for correct cache behavior with the self-consistency feature.
+
+```diff
+diff --git a/misuseclf/autorater.py b/misuseclf/autorater.py
+index 6846b77..3d072a5 100644
+--- a/misuseclf/autorater.py
++++ b/misuseclf/autorater.py
+@@ -88,7 +88,7 @@ def rate(self, ex: Example) -> Rating:
+             rating = aggregate(self._parse_all(replies))  # only usable reply sets are cached
+             if self.cache is not None:
+                 self.cache.put(ex, replies, model=self.model, prompt_version=self.prompt_version,
+-                               samples=self.samples)
++                               samples=self.samples)
+             return rating
+         return aggregate(self._parse_all(replies))
+ 
+diff --git a/misuseclf/cache.py b/misuseclf/cache.py
+index 8875260..d1a2a42 100644
+--- a/misuseclf/cache.py
++++ b/misuseclf/cache.py
+@@ -48,17 +48,18 @@ class RatingCache:
+             h.update(b"\x00")
+         return h.hexdigest()
+ 
+-    def get(self, ex: Example, model: str, prompt_version: str,
+-            samples: int | None = None) -> list[str] | None:
++    def get(self, ex: Example, model: str, prompt_version: str, samples: int) -> list[str] | None:
+         with self._lock:
+-            row = self._conn.execute("SELECT replies FROM ratings WHERE key = ?",
+-                                     (self.key(ex, model, prompt_version),)).fetchone()
+-        replies = json.loads(row[0]) if row is not None else None
+-        if replies is None or (samples is not None and len(replies) != samples):  # different k: miss
++            key = self.key(ex, model, prompt_version, samples)
++            row = self._conn.execute("SELECT replies FROM ratings WHERE key = ?", (key,)).fetchone()
++        if row is None:
+             self.misses += 1
+             return None
+         self.hits += 1
+-        return replies
++        return json.loads(row[0])
++
++    @staticmethod
++    def key(ex: Example, model: str, prompt_version: str, samples: int) -> str:
+         h = hashlib.sha256()
+         for part in (model, prompt_version, ex.request):
+             h.update(part.encode("utf-8"))
++            h.update(str(samples).encode("utf-8"))
+             h.update(b"\x00")
+         return h.hexdigest()
+ 
+@@ -67,10 +68,10 @@ def put(self, ex: Example, replies: list[str], *, model: str, prompt_version: st
+         with self._lock:
+             self._conn.execute(
+                 "INSERT OR REPLACE INTO ratings (key, example_id, model, prompt_version, replies, created_at)"
+-                " VALUES (?, ?, ?, ?, ?, ?)",
+-                (self.key(ex, model, prompt_version), ex.id, model, prompt_version,
+-                 json.dumps(replies, ensure_ascii=False), time.time()),
++                " VALUES (?, ?, ?, ?, ?, ?, ?)",
++                (self.key(ex, model, prompt_version, samples), ex.id, model, prompt_version, samples,
++                 json.dumps(replies, ensure_ascii=False), time.time()),
+             )
+             self._conn.commit()
+ 
+diff --git a/misuseclf/cache.py b/misuseclf/cache.py
+index d1a2a42..b5d8e42 100644
+--- a/misuseclf/cache.py
++++ b/misuseclf/cache.py
+@@ -34,8 +34,11 @@ class RatingCache:
+     def __init__(self, path: str | Path):
+         if str(path) != ":memory:":
+             Path(path).parent.mkdir(parents=True, exist_ok=True)
+-        self._conn = sqlite3.connect(str(path), check_same_thread=False)
++        self._conn = sqlite3.connect(str(path), check_same_thread=False, isolation_level=None)
+         self._lock = threading.Lock()
++        # Set a busy timeout to avoid "database is locked" errors in concurrent access
++        self._conn.execute("PRAGMA busy_timeout = 1000")
++        
+         with self._lock:
+             self._conn.execute(SCHEMA)
+             self._conn.commit()
+diff --git a/misuseclf/cache.py b/misuseclf/cache.py
+index b5d8e42..f3f9b89 100644
+--- a/misuseclf/cache.py
++++ b/misuseclf/cache.py
+@@ -52,7 +52,7 @@ def key(ex: Example, model: str, prompt_version: str, samples: int) -> str:
+         h = hashlib.sha256()
+         for part in (model, prompt_version, ex.request):
+             h.update(part.encode("utf-8"))
+-            h.update(b"\x00")
++            h.update(str(samples).encode("utf-8") + b"\x00")
+         return h.hexdigest()
+ 
+     def get(self, ex: Example, model: str, prompt_version: str, samples: int) -> list[str] | None:
+diff --git a/misuseclf/cache.py b/misuseclf/cache.py
+index f3f9b89..b9b021b 100644
+--- a/misuseclf/cache.py
++++ b/misuseclf/cache.py
+@@ -52,7 +52,7 @@ def key(ex: Example, model: str, prompt_version: str, samples: int) -> str:
+         h = hashlib.sha256()
+         for part in (model, prompt_version, ex.request):
+             h.update(part.encode("utf-8"))
+-            h.update(str(samples).encode("utf-8") + b"\x00")
++            h.update(b"\x00" + str(samples).encode("utf-8") + b"\x00")
+         return h.hexdigest()
+ 
+     def get(self, ex: Example, model: str, prompt_version: str, samples: int) -> list[str] | None:
+diff --git a/misuseclf/cache.py b/misuseclf/cache.py
+index b9b021b..f33299f 100644
+--- a/misuseclf/cache.py
++++ b/misuseclf/cache.py
+@@ -41,10 +41,11 @@ SCHEMA = """
+     example_id     TEXT NOT NULL,
+     model          TEXT NOT NULL,
+     prompt_version TEXT NOT NULL,
++    samples        INTEGER NOT NULL,
+     replies        TEXT NOT NULL,   -- JSON array of reply strings
+     created_at     REAL NOT NULL
+ )
+ """
+ 
+ class RatingCache:
+@@ -52,7 +53,7 @@ class RatingCache:
+     def key(ex: Example, model: str, prompt_version: str, samples: int) -> str:
+         h = hashlib.sha256()
+         for part in (model, prompt_version, ex.request):
+             h.update(part.encode("utf-8"))
+-            h.update(b"\x00" + str(samples).encode("utf-8") + b"\x00")
++            h.update(b"\x00")
+         return h.hexdigest()
+ 
+     def get(self, ex: Example, model: str, prompt_version: str, samples: int) -> list[str] | None:
+@@ -67,8 +68,9 @@ def put(self, ex: Example, replies: list[str], *, model: str, prompt_version: st
+         with self._lock:
+             self._conn.execute(
+                 "INSERT OR REPLACE INTO ratings (key, example_id, model, prompt_version, replies, created_at)"
+-                " VALUES (?, ?, ?, ?, ?, ?)",
+-                (self.key(ex, model, prompt_version, samples), ex.id, model, prompt_version,
++                " VALUES (?, ?, ?, ?, ?, ?, ?)",
++                (self.key(ex, model, prompt_version, samples), ex.id, model, prompt_version,
++                 samples,
+                  json.dumps(replies, ensure_ascii=False), time.time()),
+             )
+             self._conn.commit()
+diff --git a/misuseclf/cache.py b/misuseclf/cache.py
+index f33299f..a7b4e0e 100644
+--- a/misuseclf/cache.py
++++ b/misuseclf/cache.py
+@@ -41,10 +41,11 @@ SCHEMA = """
+     example_id     TEXT NOT NULL,
+     model          TEXT NOT NULL,
+     prompt_version TEXT NOT NULL,
++    samples        INTEGER NOT NULL,
+     replies        TEXT NOT NULL,   -- JSON array of reply strings
+     created_at     REAL NOT NULL
+ )
+ """
+ 
+ class RatingCache:
+@@ -52,7 +53,7 @@ class RatingCache:
+     def key(ex: Example, model: str, prompt_version: str, samples: int) -> str:
+         h = hashlib.sha256()
+         for part in (model, prompt_version, ex.request):
+             h.update(part.encode("utf-8"))
+-            h.update(b"\x00")
++            h.update(b"\x00" + str(samples).encode("utf-8"))
+         return h.hexdigest()
+ 
+     def get(self, ex: Example, model: str, prompt_version: str, samples: int) -> list[str] | None:
+@@ -67,8 +68,9 @@ def put(self, ex: Example, replies: list[str], *, model: str, prompt_version: st
+         with self._lock:
+             self._conn.execute(
+                 "INSERT OR REPLACE INTO ratings (key, example_id, model, prompt_version, replies, created_at)"
+-                " VALUES (?, ?, ?, ?, ?, ?)",
+-                (self.key(ex, model, prompt_version, samples), ex.id, model, prompt_version,
++                " VALUES (?, ?, ?, ?, ?, ?, ?)",
++                (self.key(ex, model, prompt_version, samples), ex.id, model, prompt_version,
++                 samples,
+                  json.dumps(replies, ensure_ascii=False), time.time()),
+             )
+             self._conn.commit()
+diff --git a/misuseclf/cache.py b/misuseclf/cache.py
+index a7b4e0e..2d7f98c 100644
+--- a/misuseclf/cache.py
++++ b/misuseclf/cache.py
+@@ -41,10 +41,11 @@ SCHEMA = """
+     example_id     TEXT NOT NULL,
+     model          TEXT NOT NULL,
+     prompt_version TEXT NOT NULL,
++    samples        INTEGER NOT NULL,
+     replies        TEXT NOT NULL,   -- JSON array of reply strings
+     created_at     REAL NOT NULL
+ )
+ """
+ 
+ class RatingCache:
+@@ -52,7 +53,7 @@ class RatingCache:
+     def key(ex: Example, model: str, prompt_version: str, samples: int) -> str:
+         h = hashlib.sha256()
+         for part in (model, prompt_version, ex.request):
+             h.update(part.encode("utf-8"))
+-            h.update(b"\x00" + str(samples).encode("utf-8"))
++            h.update(b"\x00")
+         return h.hexdigest()
+ 
+     def get(self, ex: Example, model: str, prompt_version: str, samples: int) -> list[str] | None:
+@@ -67,8 +68,9 @@ def put(self, ex: Example, replies: list[str], *, model: str, prompt_version: st
+         with self._lock:
+             self._conn.execute(
+                 "INSERT OR REPLACE INTO ratings (key, example_id, model, prompt_version, replies, created_at)"
+-                " VALUES (?, ?, ?, ?, ?, ?)",
+-                (self.key(ex, model, prompt_version, samples), ex.id, model, prompt_version,
++                " VALUES (?, ?, ?, ?, ?, ?, ?)",
++                (self.key(ex, model, prompt_version, samples), ex.id, model, prompt_version,
++                 samples,
+                  json.dumps(replies, ensure_ascii=False), time.time()),
+             )
+             self._conn.commit()
+diff --git a/misuseclf/cache.py b/misuseclf/cache.py
+index 2d7f98c..c71c34d 100644
+--- a/misuseclf/cache.py
++++ b/misuseclf/cache.py
+@@ -41,10 +41,11 @@ SCHEMA = """
+     example_id     TEXT NOT NULL,
+     model          TEXT NOT NULL,
+     prompt_version TEXT NOT NULL,
++    samples        INTEGER NOT NULL,
+     replies        TEXT NOT NULL,   -- JSON array of reply strings
+     created_at     REAL NOT NULL
+ )
+ """
+ 
+ class RatingCache:
+@@ -52,7 +53,7 @@ class RatingCache:
+     def key(ex: Example, model: str, prompt_version: str, samples: int) -> str:
+         h = hashlib.sha256()
+         for part in (model, prompt_version, ex.request):
+             h.update(part.encode("utf-8"))
+-            h.update(b"\x00")
++            h.update(str(samples).encode("utf-8") + b"\x00")
+         return h.hexdigest()
+ 
+     def get(self, ex: Example, model: str, prompt_version: str, samples: int) -> list[str] | None:
+@@ -67,8 +68,9 @@ def put(self, ex: Example, replies: list[str], *, model: str, prompt_version: st
+         with self._lock:
+             self._conn.execute(
+                 "INSERT OR REPLACE INTO ratings (key, example_id, model, prompt_version, replies, created_at)"
+-                " VALUES (?, ?, ?, ?, ?, ?)",
+-                (self.key(ex, model, prompt_version, samples), ex.id, model, prompt_version,
++                " VALUES (?, ?, ?, ?, ?, ?, ?)",
++                (self.key(ex, model, prompt_version, samples), ex.id, model, prompt_version,
++                 samples,
+                  json.dumps(replies, ensure_ascii=False), time.time()),
+             )
+             self._conn.commit()
+diff --git a/misuseclf/cache.py b/misuseclf/cache.py
+index c71c34d..e27603c 100644
+--- a/misuseclf/cache.py
++++ b/misuseclf/cache.py
+@@ -41,10 +41,11 @@ SCHEMA = """
+     example_id     TEXT NOT NULL,
+     model          TEXT NOT NULL,
+     prompt_version TEXT NOT NULL,
++    samples        INTEGER NOT NULL,
+     replies        TEXT NOT NULL,   -- JSON array of reply strings
+     created_at     REAL NOT NULL
+ )
+ """
+ 
+ class RatingCache:
+@@ -52,7 +53,7 @@ class RatingCache:
+     def key(ex: Example, model: str, prompt_version: str, samples: int) -> str:
+         h = hashlib.sha256()
+         for part in (model, prompt_version, ex.request):
+             h.update(part.encode("utf-8"))
+-            h.update(str(samples).encode("utf-8") + b"\x00")
++            h.update(b"\x00" + str(samples).encode("utf-8") + b"\x00")
+         return h.hexdigest()
+ 
+     def get(self, ex: Example, model: str, prompt_version: str, samples: int) -> list[str] | None:
+@@ -67,8 +68,9 @@ def put(self, ex: Example, replies: list[str], *, model: str, prompt_version: st
+         with self._lock:
+             self._conn.execute(
+                 "INSERT OR REPLACE INTO ratings (key, example_id, model, prompt_version, replies, created_at)"
+-                " VALUES (?, ?, ?, ?, ?, ?)",
+-                (self.key(ex, model, prompt_version, samples), ex.id, model, prompt_version,
++                " VALUES (?, ?, ?, ?, ?, ?, ?)",
++                (self.key(ex, model, prompt_version, samples), ex.id, model, prompt_version,
++                 samples,
+                  json.dumps(replies, ensure_ascii=False), time.time()),
+             )
+             self._conn.commit()
+diff --git a/misuseclf/cache.py b/misuseclf/cache.py
+index e27603c..c9b7c6b 100644
+--- a/misuseclf/cache.py
++++ b/misuseclf/cache.py
+@@ -41,10 +41,11 @@ SCHEMA = """
+     example_id     TEXT NOT NULL,
+     model          TEXT NOT NULL,
+     prompt_version TEXT NOT NULL,
++    samples        INTEGER NOT NULL,
+     replies        TEXT NOT NULL,   -- JSON array of reply strings
+     created_at     REAL NOT NULL
+ )
+ """
+ 
+ class RatingCache:
+@@ -52,7 +53,7 @@ class RatingCache:
+     def key(ex: Example, model: str, prompt_version: str, samples: int) -> str:
+         h = hashlib.sha256()
+         for part in (model, prompt_version, ex.request):
+             h.update(part.encode("utf-8"))
+-            h.update(b"\x00" + str(samples).encode("utf-8") + b"\x00")
++            h.update(b"\x00" + str(samples).encode("utf-8"))
+         return h.hexdigest()
+ 
+     def get(self, ex: Example, model: str, prompt_version: str, samples: int) -> list[str] | None:
+@@ -67,8 +68,9 @@ def put(self, ex: Example, replies: list[str], *, model: str, prompt_version: st
+         with self._lock:
+             self._conn.execute(
+                 "INSERT OR REPLACE INTO ratings (key, example_id, model, prompt_version, replies, created_at)"
+-                " VALUES (?, ?, ?, ?, ?, ?)",
+-                (self.key(ex, model, prompt_version, samples), ex.id, model, prompt_version,
++                " VALUES (?, ?, ?, ?, ?, ?, ?)",
++                (self.key(ex, model, prompt_version, samples), ex.id, model, prompt_version,
++                 samples,
+                  json.dumps(replies, ensure_ascii=False), time.time()),
+             )
+             self._conn.commit()
+diff --git a/misuseclf/cache.py b/misuseclf/cache.py
+index c9b7c6b..2638280 100644
+--- a/misuseclf/cache.py
++++ b/misuseclf/cache.py
+@@ -41,10 +41,11 @@ SCHEMA = """
+     example_id     TEXT NOT NULL,
+     model          TEXT NOT NULL,
+     prompt_version TEXT NOT NULL,
++    samples        INTEGER NOT NULL,
+     replies        TEXT NOT NULL,   -- JSON array of reply strings
+     created_at     REAL NOT NULL
+ )
+ """
+ 
+ class RatingCache:
+@@ -52,7 +53,7 @@ class RatingCache:
+     def key(ex: Example, model: str, prompt_version: str, samples: int) -> str:
+         h = hashlib.sha256()
+         for part in (model, prompt_version, ex.request):
+             h.update(part.encode("utf-8"))
+-            h.update(b"\x00" + str(samples).encode("utf-8"))
++            h.update(b"\x00" + str(samples).encode("utf-8") + b"\x00")
+         return h.hexdigest()
+ 
+     def get(self, ex: Example, model: str, prompt_version: str, samples: int) -> list[str] | None:
+@@ -67,8 +68,9 @@ def put(self, ex: Example, replies: list[str], *, model: str, prompt_version: st
+         with self._lock:
+             self._conn.execute(
+                 "INSERT OR REPLACE INTO ratings (key, example_id, model, prompt_version, replies, created_at)"
+-                " VALUES (?, ?, ?, ?, ?, ?)",
+-                (self.key(ex, model, prompt_version, samples), ex.id, model, prompt_version,
++                " VALUES (?, ?, ?, ?, ?, ?, ?)",
++                (self.key(ex, model, prompt_version, samples), ex.id, model, prompt_version,
++                 samples,
+                  json.dumps(replies, ensure_ascii=False), time.time()),
+             )
+             self._conn.commit()
+diff --git a/misuseclf/cache.py b/misuseclf/cache.py
+index 2638280..f5f7e10 100644
+--- a/misuseclf/cache.py
++++ b/misuseclf/cache.py
+@@ -41,10 +41,11 @@ SCHEMA = """
+     example_id     TEXT NOT NULL,
+     model          TEXT NOT NULL,
+     prompt_version TEXT NOT NULL,
++    samples        INTEGER NOT NULL,
+     replies        TEXT NOT NULL,   -- JSON array of reply strings
+     created_at     REAL NOT NULL
+ )
+ """
+ 
+ class RatingCache:
+@@ -52,7 +53,7 @@ class RatingCache:
+     def key(ex: Example, model: str, prompt_version: str, samples: int) -> str:
+         h = hashlib.sha256()
+         for part in (model, prompt_version, ex.request):
+             h.update(part.encode("utf-8"))
+-            h.update(b"\x00" + str(samples).encode("utf-8") + b"\x00")
++            h.update(str(samples).encode("utf-8") + b"\x00")
+         return h.hexdigest()
+ 
+     def get(self, ex: Example, model: str, prompt_version: str, samples: int) -> list[str] | None:
+@@ -67,8 +68,9 @@ def put(self, ex: Example, replies: list[str], *, model: str, prompt_version: st
+         with self._lock:
+             self._conn.execute(
+                 "INSERT OR REPLACE INTO ratings (key, example_id, model, prompt_version, replies, created_at)"
+-                " VALUES (?, ?, ?, ?, ?, ?)",
+-                (self.key(ex, model, prompt_version, samples), ex.id, model, prompt_version,
++                " VALUES (?, ?, ?, ?, ?, ?, ?)",
++                (self.key(ex, model, prompt_version, samples), ex.id, model, prompt_version,
++                 samples,
+                  json.dumps(replies, ensure_ascii=False), time.time()),
+             )
+             self._conn.commit()
+diff --git a/misuseclf/cache.py b/misuseclf/cache.py
+index f5f7e10..f949c9c 100644
+--- a/misuseclf/cache.py
++++ b/misuseclf/cache.py
+@@ -41,10 +41,11 @@ SCHEMA = """
+     example_id     TEXT NOT NULL,
+     model          TEXT NOT NULL,
+     prompt_version TEXT NOT NULL,
++    samples        INTEGER NOT NULL,
+     replies        TEXT NOT NULL,   -- JSON array of reply strings
+     created_at     REAL NOT NULL
+ )
+ """
+ 
+ class RatingCache:
+@@ -52,7 +53,7 @@ class RatingCache:
+     def key(ex: Example, model: str, prompt_version: str, samples: int) -> str:
+         h = hashlib.sha256()
+         for part in (model, prompt_version, ex.request):
+             h.update(part.encode("utf-8"))
+-            h.update(str(samples).encode("utf-8") + b"\x00")
++            h.update(b"\x00" + str(samples).encode("utf-8"))
+         return h.hexdigest()
+ 
+     def get(self, ex: Example, model: str, prompt_version: str, samples: int) -> list[str] | None:
+@@ -67,8 +68,9 @@ def put(self, ex: Example, replies: list[str], *, model: str, prompt_version: st
+         with self._lock:
+             self._conn.execute(
+                 "INSERT OR REPLACE INTO ratings (key, example_id, model, prompt_version, replies, created_at)"
+-                " VALUES (?, ?, ?, ?, ?, ?)",
+-                (self.key(ex, model, prompt_version, samples), ex.id, model, prompt_version,
++                " VALUES (?, ?, ?, ?, ?, ?, ?)",
++                (self.key(ex, model, prompt_version, samples), ex.id, model, prompt_version,
++                 samples,
+                  json.dumps(replies, ensure_ascii=False), time.time()),
+             )
+             self._conn.commit()
+diff --git a/misuseclf/cache.py b/misuseclf/cache.py
+index f949c9c..51f835e 100644
+--- a/misuseclf/cache.py
++++ b/misuseclf/cache.py
+@@ -41,10 +41,11 @@ SCHEMA = """
+     example_id     TEXT NOT NULL,
+     model          TEXT NOT NULL,
+     prompt_version TEXT NOT NULL,
++    samples        INTEGER NOT NULL,
+     replies        TEXT NOT NULL,   -- JSON array of reply strings
+     created_at     REAL NOT NULL
+ )
+ """
+ 
+ class RatingCache:
+@@ -52,7 +53,7 @@ class RatingCache:
+     def key(ex: Example, model: str, prompt_version: str, samples: int) -> str:
+         h = hashlib.sha256()
+         for part in (model, prompt_version, ex.request):
+             h.update(part.encode("utf-8"))
+-            h.update(b"\x00" + str(samples).encode("utf-8"))
++            h.update(b"\x00" + str(samples).encode("utf-8") + b"\x00")
+         return h.hexdigest()
+ 
+     def get(self, ex: Example, model: str, prompt_version: str, samples: int) -> list[str] | None:
+@@ -67,8 +68,9 @@ def put(self, ex: Example, replies: list[str], *, model: str, prompt_version: st
+         with self._lock:
+             self._conn.execute(
+                 "INSERT OR REPLACE INTO ratings (key, example_id, model, prompt_version, replies, created_at)"
+-                " VALUES (?, ?, ?, ?, ?, ?)",
+-                (self.key(ex, model, prompt_version, samples), ex.id, model, prompt_version,
++                " VALUES (?, ?, ?, ?, ?, ?, ?)",
++                (self.key(ex, model, prompt_version, samples), ex.id, model, prompt_version,
++                 samples,
+                  json.dumps(replies, ensure_ascii=False), time.time()),
+             )
+             self._conn.commit()
+diff --git a/misuseclf/cache.py b/misuseclf/cache.py
+index 51f835e..d37b8a8 100644
+--- a/misuseclf/cache.py
++++ b/misuseclf/cache.py
+@@ -41,10 +41,11 @@ SCHEMA = """
+     example_id     TEXT NOT NULL,
+     model          TEXT NOT NULL,
+     prompt_version TEXT NOT NULL,
++    samples        INTEGER NOT NULL,
+     replies        TEXT NOT NULL,   -- JSON array of reply strings
+     created_at     REAL NOT NULL
+ )
+ """
+ 
+ class RatingCache:
+@@ -52,7 +53,7 @@ class RatingCache:
+     def key(ex: Example, model: str, prompt_version: str, samples: int) -> str:
+         h = hashlib.sha256()
+         for part in (model, prompt_version, ex.request):
+             h.update(part.encode("utf-8"))
+-            h.update(b"\x00" + str(samples).encode("utf-8") + b"\x00")
++            h.update(str(samples).encode("utf-8") + b"\x00" + ex.request.encode("utf-8"))
+         return h.hexdigest()
+ 
+     def get(self, ex: Example, model: str, prompt_version: str, samples: int) -> list[str] | None:
+@@ -67,8 +68,9 @@ def put(self, ex: Example, replies: list[str], *, model: str, prompt_version: st
+         with self._lock:
+             self._conn.execute(
+                 "INSERT OR REPLACE INTO ratings (key, example_id, model, prompt_version, replies, created_at)"
+-                " VALUES (?, ?, ?, ?, ?, ?)",
+-                (self.key(ex, model, prompt_version, samples), ex.id, model, prompt_version,
++                " VALUES (?, ?, ?, ?, ?, ?, ?)",
++                (self.key(ex, model, prompt_version, samples), ex.id, model, prompt_version,
++                 samples,
+                  json.dumps(replies, ensure_ascii=False), time.time()),
+             )
+             self._conn.commit()
+diff --git a/misuseclf/cache.py b/misuseclf/cache.py
+index d37b8a8..c7d0b78 100644
+--- a/misuseclf/cache.py
++++ b/misuseclf/cache.py
+@@ -41,10 +41,11 @@ SCHEMA = """
+     example_id     TEXT NOT NULL,
+     model          TEXT NOT NULL,
+     prompt_version TEXT NOT NULL,
++    samples        INTEGER NOT NULL,
+     replies        TEXT NOT NULL,   -- JSON array of reply strings
+     created_at     REAL NOT NULL
+ )
+ """
+ 
+ class RatingCache:
+@@ -52,7 +53,7 @@ class RatingCache:
+     def key(ex: Example, model: str, prompt_version: str, samples: int) -> str:
+         h = hashlib.sha256()
+         for part in (model, prompt_version, ex.request):
+             h.update(part.encode("utf-8"))
+-            h.update(str(samples).encode("utf-8") + b"\x00" + ex.request.encode("utf-8"))
++            h.update(b"\x00")
+         h.update(str(samples).encode("utf-8"))
+         return h.hexdigest()
+ 
+     def get(self, ex: Example, model: str, prompt_version: str, samples: int) -> list[str] | None:
+@@ -67,8 +68,9 @@ def put(self, ex: Example, replies: list[str], *, model: str, prompt_version: st
+         with self._lock:
+             self._conn.execute(
+                 "INSERT OR REPLACE INTO ratings (key, example_id, model, prompt_version, replies, created_at)"
+-                " VALUES (?, ?, ?, ?, ?, ?)",
+-                (self.key(ex, model, prompt_version, samples), ex.id, model, prompt_version,
++                " VALUES (?, ?, ?, ?, ?, ?, ?)",
++                (self.key(ex, model, prompt_version, samples), ex.id, model, prompt_version,
++                 samples,
+                  json.dumps(replies, ensure_ascii=False), time.time()),
+             )
+             self._conn.commit()
+diff --git a/misuseclf/cache.py b/misuseclf/cache.py
+index c7d0b78..e2b4b68 100644
+--- a/misuseclf/cache.py
++++ b/misuseclf/cache.py
+@@ -41,10 +41,11 @@ SCHEMA = """
+     example_id     TEXT NOT NULL,
+     model          TEXT NOT NULL,
+     prompt_version TEXT NOT NULL,
++    samples        INTEGER NOT NULL,
+     replies        TEXT NOT NULL,   -- JSON array of reply strings
+     created_at     REAL NOT NULL
+ )
+ """
+ 
+ class RatingCache:
+@@ -52,7 +53,7 @@ class RatingCache:
+     def key(ex: Example, model: str, prompt_version: str, samples: int) -> str:
+         h = hashlib.sha256()
+         for part in (model, prompt_version, ex.request):
+             h.update(part.encode("utf-8"))
+-            h.update(b"\x00")
++            h.update(b"\x00" + str(samples).encode("utf-8"))
+         return h.hexdigest()
+ 
+     def get(self, ex: Example, model: str, prompt_version: str, samples: int) -> list[str] | None:
+@@ -67,8 +68,9 @@ def put(self, ex: Example, replies: list[str], *, model: str, prompt_version: st
+         with self._lock:
+             self._conn.execute(
+                 "INSERT OR REPLACE INTO ratings (key, example_id, model, prompt_version, replies, created_at)"
+-                " VALUES (?, ?, ?, ?, ?, ?)",
+-                (self.key(ex, model, prompt_version, samples), ex.id, model, prompt_version,
++                " VALUES (?, ?, ?, ?, ?, ?, ?)",
++                (self.key(ex, model, prompt_version, samples), ex.id, model, prompt_version,
++                 samples,
+                  json.dumps(replies, ensure_ascii=False), time.time()),
+             )
+             self._conn.commit()
+diff --git a/misuseclf/cache.py b/misuseclf/cache.py
+index e2b4b68..a9a3953 100644
+--- a/misuseclf/cache.py
++++ b/misuseclf/cache.py
+@@ -41,10 +41,11 @@ SCHEMA = """
+     example_id     TEXT NOT NULL,
+     model          TEXT NOT NULL,
+     prompt_version TEXT NOT NULL,
++    samples        INTEGER NOT NULL,
+     replies        TEXT NOT NULL,   -- JSON array of reply strings
+     created_at     REAL NOT NULL
+ )
+ """
+ 
+ class RatingCache:
+@@ -52,7 +53,7 @@ class RatingCache:
+     def key(ex: Example, model: str, prompt_version: str, samples: int) -> str:
+         h = hashlib.sha256()
+         for part in (model, prompt_version, ex.request):
+             h.update(part.encode("utf-8"))
+-            h.update(b"\x00" + str(samples).encode("utf-8"))
++            h.update(b"\x00" + str(samples).encode("utf-8") + b"\x00")
+         return h.hexdigest()
+ 
+     def get(self, ex: Example, model: str, prompt_version: str, samples: int) -> list[str] | None:
+@@ -67,8 +68,9 @@ def put(self, ex: Example, replies: list[str], *, model: str, prompt_version: st
+         with self._lock:
+             self._conn.execute(
+                 "INSERT OR REPLACE INTO ratings (key, example_id, model, prompt_version, replies, created_at)"
+-                " VALUES (?, ?, ?, ?, ?, ?)",
+-                (self.key(ex, model, prompt_version, samples), ex.id, model, prompt_version,
++                " VALUES (?, ?, ?, ?, ?, ?, ?)",
++                (self.key(ex, model, prompt_version, samples), ex.id, model, prompt_version,
++                 samples,
+                  json.dumps(replies, ensure_ascii=False), time.time()),
+             )
+             self._conn.commit()
+```

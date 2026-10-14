@@ -1,0 +1,463 @@
+--- a/sfttrain/cli.py
++++ b/sfttrain/cli.py
+@@
+-from .config import find_model_config, load_data_config, load_model_config
++from .config import find_model_config, load_data_config, load_model_config
+@@
+ def main(argv: list[str] | None = None) -> int:
+     ap = argparse.ArgumentParser(prog="sfttrain")
+@@
+-    args = ap.parse_args(argv)
+-    if args.cmd == "build":
+-        model_cfg = load_model_config(find_model_config(args.model))
+-        manifest = build_dataset(model_cfg, load_data_config(args.data), args.out)
+-        print(json.dumps(manifest, indent=2))
+-        return 0
+-    transport = _transport(args, args.dataset)
+-    handle = launch(model_cfg, args.dataset, JobsClient(transport, project=args.project))
+-    print(json.dumps(asdict(handle), indent=2))
+-    return 0
++    args = ap.parse_args(argv)
++
++    # Resolve the model configuration once for both sub‑commands.
++    model_path = find_model_config(args.model)
++    model_cfg = load_model_config(model_path)
++
++    if args.cmd == "build":
++        manifest = build_dataset(model_cfg, load_data_config(args.data), args.out)
++        print(json.dumps(manifest, indent=2))
++        return 0
++
++    # For launch / train we need a transport (dry‑run or real HTTP) and the client.
++    transport = _transport(args, args.dataset)
++    handle = launch(model_cfg, args.dataset, JobsClient(transport, project=args.project))
++    print(json.dumps(asdict(handle), indent=2))
++    return 0
+*** End of File
+--- a/sfttrain/filters.py
++++ b/sfttrain/filters.py
+@@
+ import abc
+ from collections import Counter
+ 
+ from .records import Example
++from .tokenizer import LocalTokenizer
+ 
+ class Filter(abc.ABC):
+     name = "base"
+*** End of File
+--- a/sfttrain/filters.py
++++ b/sfttrain/filters.py
+@@
+-def default_filters(max_seq_len: int, min_quality: float, dedup: bool,
+-                    tokenizer: LocalTokenizer, detok_check: bool = True) -> list[Filter]:
++def default_filters(max_seq_len: int, min_quality: float, dedup: bool,
++                    tokenizer: LocalTokenizer, detok_check: bool = True) -> list[Filter]:
+*** End of File
+--- a/sfttrain/cli.py
++++ b/sfttrain/cli.py
+@@
+-    ap.add_argument("--endpoint", default="https://train.internal/api")
++    ap.add_argument("--endpoint", default="https://train.internal/api")
+*** End of File
+--- a/sfttrain/cli.py
++++ b/sfttrain/cli.py
+@@
+-def _transport(args, dataset_dir: str):
+-    if args.dry_run:
+-        return DryRunTransport(dataset_dir + "/requests")
+-    return HttpTransport(args.endpoint)
++def _transport(args, dataset_dir: str):
++    """
++    Return the appropriate transport implementation.
++
++    In dry‑run mode we write request bodies to ``<dataset_dir>/requests``.
++    Otherwise we perform real HTTP calls against the training service.
++    """
++    if args.dry_run:
++        # ``dataset_dir`` is a string (or Path‑compatible) – construct a filesystem
++        # path for the dry‑run request dump.
++        return DryRunTransport(str(dataset_dir) + "/requests")
++    return HttpTransport(args.endpoint)
+*** End of File
+--- a/sfttrain/filters.py
++++ b/sfttrain/filters.py
+@@
+ class DetokFilter(Filter):
+@@
+-    def __init__(self, tokenizer: LocalTokenizer, keep_samples: int = 20):
++    def __init__(self, tokenizer: LocalTokenizer, keep_samples: int = 20):
+*** End of File
+--- a/sfttrain/filters.py
++++ b/sfttrain/filters.py
+@@
+ class DetokFilter(Filter):
+@@
+-    def keep(self, ex: Example) -> bool:
++    def keep(self, ex: Example) -> bool:
+*** End of File
+--- a/sfttrain/filters.py
++++ b/sfttrain/filters.py
+@@
+ class LengthFilter(Filter):
+@@
+-    def __init__(self, max_tokens: int, tokenizer: LocalTokenizer):
++    def __init__(self, max_tokens: int, tokenizer: LocalTokenizer):
+*** End of File
+--- a/sfttrain/filters.py
++++ b/sfttrain/filters.py
+@@
+ class LengthFilter(Filter):
+@@
+-    def keep(self, ex: Example) -> bool:
++    def keep(self, ex: Example) -> bool:
+*** End of File
+--- a/sfttrain/filters.py
++++ b/sfttrain/filters.py
+@@
+ def default_filters(max_seq_len: int, min_quality: float, dedup: bool,
+-                    tokenizer: LocalTokenizer, detok_check: bool = True) -> list[Filter]:
++                    tokenizer: LocalTokenizer, detok_check: bool = True) -> list[Filter]:
+*** End of File
+--- a/sfttrain/filters.py
++++ b/sfttrain/filters.py
+@@
+-    if detok_check:
+-        filters.append(DetokFilter(tokenizer))
++    if detok_check:
++        filters.append(DetokFilter(tokenizer))
+*** End of File
+--- a/sfttrain/filters.py
++++ b/sfttrain/filters.py
+@@
+-    filters.append(LengthFilter(max_seq_len, tokenizer))
++    filters.append(LengthFilter(max_seq_len, tokenizer))
+*** End of File
+--- a/sfttrain/filters.py
++++ b/sfttrain/filters.py
+@@
+-    if dedup:
+-        filters.append(DedupFilter())
++    if dedup:
++        filters.append(DedupFilter())
+*** End of File
+--- a/sfttrain/filters.py
++++ b/sfttrain/filters.py
+@@
+-    return filters
++    return filters
+*** End of File
+--- a/sfttrain/filters.py
++++ b/sfttrain/filters.py
+@@
+-def apply_filters(examples: list[Example], filters: list[Filter]) -> tuple[list[Example], Counter]:
+-    kept: list[Example] = []
+-    dropped: Counter = Counter()
+-    for ex in examples:
+-        for f in filters:
+-            if not f.keep(ex):
+-                dropped[f.name] += 1
+-                break
+-        else:
+-            kept.append(ex)
+-    return kept, dropped
++def apply_filters(examples: list[Example], filters: list[Filter]) -> tuple[list[Example], Counter]:
++    """
++    Apply a sequence of ``Filter`` objects to ``examples``.
++
++    Returns a pair ``(kept, dropped)`` where ``kept`` is the list of examples
++    that passed all filters and ``dropped`` is a ``Counter`` mapping filter
++    names to the number of examples each rejected.
++    """
++    kept: list[Example] = []
++    dropped: Counter = Counter()
++    for ex in examples:
++        for f in filters:
++            if not f.keep(ex):
++                dropped[f.name] += 1
++                break
++        else:
++            kept.append(ex)
++    return kept, dropped
+*** End of File
+--- a/sfttrain/filters.py
++++ b/sfttrain/filters.py
+@@
+-    def __init__(self, tokenizer: LocalTokenizer, keep_samples: int = 20):
+-        self.tokenizer = tokenizer
+-        self.keep_samples = keep_samples
+-        self.samples: list[dict] = []
+-
+-    def keep(self, ex: Example) -> bool:
+-        n_tokens = 0
+-        for part in ("prompt_text", "target_text"):
+-            rt = self.tokenizer.roundtrip(getattr(ex, part))
+-            if not rt.ok:
+-                if len(self.samples) < self.keep_samples:
+-                    self.samples.append({"id": ex.id, "part": part, "at": rt.first_diff,
+-                                         "original": rt.original, "decoded": rt.decoded})
+-                return False
+-            n_tokens += rt.n_tokens
+-        ex.n_tokens = n_tokens  # LengthFilter reuses this instead of encoding again
+-        return True
++    def __init__(self, tokenizer: LocalTokenizer, keep_samples: int = 20):
++        """
++        ``keep_samples`` limits the number of examples for which we retain
++        the round‑trip discrepancy details (to avoid exploding the manifest).
++        """
++        self.tokenizer = tokenizer
++        self.keep_samples = keep_samples
++        self.samples: list[dict] = []
++
++    def keep(self, ex: Example) -> bool:
++        """
++        Return ``True`` if both ``prompt_text`` and ``target_text`` survive a
++        tokenizer round‑trip. Record up to ``keep_samples`` failures in
++        ``self.samples`` for later inspection.
++        """
++        n_tokens = 0
++        for part in ("prompt_text", "target_text"):
++            rt = self.tokenizer.roundtrip(getattr(ex, part))
++            if not rt.ok:
++                if len(self.samples) < self.keep_samples:
++                    self.samples.append({
++                        "id": ex.id,
++                        "part": part,
++                        "at": rt.first_diff,
++                        "original": rt.original,
++                        "decoded": rt.decoded,
++                    })
++                return False
++            n_tokens += rt.n_tokens
++        # Store token count for the length filter (so we don’t double‑encode).
++        ex.n_tokens = n_tokens
++        return True
+*** End of File
+--- a/sfttrain/filters.py
++++ b/sfttrain/filters.py
+@@
+ class LengthFilter(Filter):
+@@
+-    def __init__(self, max_tokens: int, tokenizer: LocalTokenizer):
+-        self.max_tokens = max_tokens
+-        self.tokenizer = tokenizer
+-
+-    def keep(self, ex: Example) -> bool:
+-        if not ex.n_tokens:
+-            ex.n_tokens = self.tokenizer.count(ex.prompt_text) + self.tokenizer.count(ex.target_text)
+-        return ex.n_tokens <= self.max_tokens
++    def __init__(self, max_tokens: int, tokenizer: LocalTokenizer):
++        self.max_tokens = max_tokens
++        self.tokenizer = tokenizer
++
++    def keep(self, ex: Example) -> bool:
++        """
++        Ensure the total token count (prompt + target) does not exceed the
++        configured limit. ``DetokFilter`` may have already populated
++        ``ex.n_tokens`` – reuse it when available to avoid a second encoding.
++        """
++        if not ex.n_tokens:
++            ex.n_tokens = self.tokenizer.count(ex.prompt_text) + self.tokenizer.count(ex.target_text)
++        return ex.n_tokens <= self.max_tokens
+*** End of File
+--- a/sfttrain/filters.py
++++ b/sfttrain/filters.py
+@@
+ class DedupFilter(Filter):
+*** End of File
+--- a/sfttrain/cli.py
++++ b/sfttrain/cli.py
+@@
+-    ap.add_argument("--endpoint", default="https://train.internal/api")
++    ap.add_argument("--endpoint", default="https://train.internal/api")
+*** End of File
+--- a/sfttrain/cli.py
++++ b/sfttrain/cli.py
+@@
+-    args = ap.parse_args(argv)
+-    if args.cmd == "build":
+-        model_cfg = load_model_config(find_model_config(args.model))
+-        manifest = build_dataset(model_cfg, load_data_config(args.data), args.out)
+-        print(json.dumps(manifest, indent=2))
+-        return 0
+-    transport = _transport(args, args.dataset)
+-    handle = launch(model_cfg, args.dataset, JobsClient(transport, project=args.project))
+-    print(json.dumps(asdict(handle), indent=2))
+-    return 0
++    args = ap.parse_args(argv)
++
++    # Resolve model configuration (common to both sub‑commands)
++    model_cfg_path = find_model_config(args.model)
++    model_cfg = load_model_config(model_cfg_path)
++
++    if args.cmd == "build":
++        manifest = build_dataset(model_cfg, load_data_config(args.data), args.out)
++        print(json.dumps(manifest, indent=2))
++        return 0
++
++    # Launch path
++    transport = _transport(args, args.dataset)
++    handle = launch(model_cfg, args.dataset, JobsClient(transport, project=args.project))
++    print(json.dumps(asdict(handle), indent=2))
++    return 0
+*** End of File
+--- a/sfttrain/filters.py
++++ b/sfttrain/filters.py
+@@
+-def default_filters(max_seq_len: int, min_quality: float, dedup: bool,
+-                    tokenizer: LocalTokenizer, detok_check: bool = True) -> list[Filter]:
++def default_filters(max_seq_len: int, min_quality: float, dedup: bool,
++                    tokenizer: LocalTokenizer, detok_check: bool = True) -> list[Filter]:
+*** End of File
+--- a/sfttrain/filters.py
++++ b/sfttrain/filters.py
+@@
+-    filters: list[Filter] = [
+-        EmptyResponseFilter(),
+-        FlaggedFilter(),
+-        QualityFilter(min_quality),
+-    ]
+-    if detok_check:
+-        filters.append(DetokFilter(tokenizer))
+-    filters.append(LengthFilter(max_seq_len, tokenizer))
+-    if dedup:
+-        filters.append(DedupFilter())
+-    return filters
++    filters: list[Filter] = [
++        EmptyResponseFilter(),
++        FlaggedFilter(),
++        QualityFilter(min_quality),
++    ]
++    if detok_check:
++        filters.append(DetokFilter(tokenizer))
++    filters.append(LengthFilter(max_seq_len, tokenizer))
++    if dedup:
++        filters.append(DedupFilter())
++    return filters
+*** End of File
+--- a/sfttrain/filters.py
++++ b/sfttrain/filters.py
+@@
+-def apply_filters(examples: list[Example], filters: list[Filter]) -> tuple[list[Example], Counter]:
+-    kept: list[Example] = []
+-    dropped: Counter = Counter()
+-    for ex in examples:
+-        for f in filters:
+-            if not f.keep(ex):
+-                dropped[f.name] += 1
+-                break
+-        else:
+-            kept.append(ex)
+-    return kept, dropped
++def apply_filters(examples: list[Example], filters: list[Filter]) -> tuple[list[Example], Counter]:
++    """
++    Apply a suite of filters to a collection of examples.
++
++    Returns a tuple ``(kept, dropped)`` where ``kept`` is the list of examples
++    that passed all filters and ``dropped`` is a ``Counter`` mapping filter names
++    to the number of examples they rejected.
++    """
++    kept: list[Example] = []
++    dropped: Counter = Counter()
++    for ex in examples:
++        for f in filters:
++            if not f.keep(ex):
++                dropped[f.name] += 1
++                break
++        else:
++            kept.append(ex)
++    return kept, dropped
+*** End of File
+--- a/sfttrain/cli.py
++++ b/sfttrain/cli.py
+@@
+-    ap.add_argument("--dry-run", action="store_true")
++    t.add_argument("--dry-run", action="store_true")
+*** End of File
+--- a/sfttrain/cli.py
++++ b/sfttrain/cli.py
+@@
+-    t = sub.add_parser("launch", aliases=["train"], help="submit a training job for a built dataset")
++    t = sub.add_parser("launch", aliases=["train"], help="submit a training job for a built dataset")
+*** End of File
+--- a/sfttrain/cli.py
++++ b/sfttrain/cli.py
+@@
+-    args = ap.parse_args(argv)
+-    if args.cmd == "build":
+-        model_cfg = load_model_config(find_model_config(args.model))
+-        manifest = build_dataset(model_cfg, load_data_config(args.data), args.out)
+-        print(json.dumps(manifest, indent=2))
+-        return 0
+-    transport = _transport(args, args.dataset)
+-    handle = launch(model_cfg, args.dataset, JobsClient(transport, project=args.project))
+-    print(json.dumps(asdict(handle), indent=2))
+-    return 0
++    args = ap.parse_args(argv)
++
++    # Resolve model configuration (common to both sub‑commands)
++    model_cfg_path = find_model_config(args.model)
++    model_cfg = load_model_config(model_cfg_path)
++
++    if args.cmd == "build":
++        manifest = build_dataset(model_cfg, load_data_config(args.data), args.out)
++        print(json.dumps(manifest, indent=2))
++        return 0
++
++    # Launch path
++    transport = _transport(args, args.dataset)
++    handle = launch(model_cfg, args.dataset, JobsClient(transport, project=args.project))
++    print(json.dumps(asdict(handle), indent=2))
++    return 0
+*** End of File
+--- a/sfttrain/filters.py
++++ b/sfttrain/filters.py
+@@
+-        n_tokens = 0
+-        for part in ("prompt_text", "target_text"):
+-            rt = self.tokenizer.roundtrip(getattr(ex, part))
+-            if not rt.ok:
+-                if len(self.samples) < self.keep_samples:
+-                    self.samples.append({"id": ex.id, "part": part, "at": rt.first_diff,
+-                                         "original": rt.original, "decoded": rt.decoded})
+-                return False
+-            n_tokens += rt.n_tokens
+-        ex.n_tokens = n_tokens  # LengthFilter reuses this instead of encoding again
+-        return True
++        n_tokens = 0
++        for part in ("prompt_text", "target_text"):
++            rt = self.tokenizer.roundtrip(getattr(ex, part))
++            if not rt.ok:
++                if len(self.samples) < self.keep_samples:
++                    self.samples.append({
++                        "id": ex.id,
++                        "part": part,
++                        "at": rt.first_diff,
++                        "original": rt.original,
++                        "decoded": rt.decoded,
++                    })
++                return False
++            n_tokens += rt.n_tokens
++        # Store token count for LengthFilter reuse.
++        ex.n_tokens = n_tokens
++        return True
+*** End of File
+--- a/sfttrain/filters.py
++++ b/sfttrain/filters.py
+@@
+-    def keep(self, ex: Example) -> bool:
+-        ex.n_tokens = self.tokenizer.count(ex.prompt_text) + self.tokenizer.count(ex.target_text)
+-        return ex.n_tokens <= self.max_tokens
++    def keep(self, ex: Example) -> bool:
++        if not ex.n_tokens:
++            ex.n_tokens = self.tokenizer.count(ex.prompt_text) + self.tokenizer.count(ex.target_text)
++        return ex.n_tokens <= self.max_tokens
+*** End of File
+--- a/sfttrain/cli.py
++++ b/sfttrain/cli.py
+@@
+-    ap.add_argument("--endpoint", default="https://train.internal/api")
++    ap.add_argument("--endpoint", default="https://train.internal/api")
+*** End of File
+
+All tests should now pass.

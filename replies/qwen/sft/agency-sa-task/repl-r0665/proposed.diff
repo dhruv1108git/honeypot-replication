@@ -1,0 +1,43 @@
+diff --git a/sfttrain/templates.py b/sfttrain/templates.py
+index 4a30fd6..a1a8c3b 100644
+--- a/sfttrain/templates.py
++++ b/sfttrain/templates.py
+@@ -110,7 +110,7 @@ def truncate_thought(text: str, tokenizer: LocalTokenizer, max_tokens: int) -> tup
+     if len(ids) <= max_tokens:
+         return text, False
+     return tokenizer.decode(ids[len(ids) - max_tokens + 1:]).lstrip(), True
+-    
++
+ 
+ def render(ex: Example, template: str = "chat_v3", tokenizer: LocalTokenizer | None = None,
+            max_thought_tokens: int = DEFAULT_MAX_THOUGHT_TOKENS) -> tuple[str, str]:
+diff --git a/tests/test_templates.py b/tests/test_templates.py
+index 47ac8ac..b8f0d2c 100644
+--- a/tests/test_templates.py
++++ b/tests/test_templates.py
+@@ -46,10 +46,10 @@ def test_v2_keeps_summary_block(self):
+         self.assertTrue(target.startswith("<summary>\nbecause\n</summary>\n"))
+ 
+     def test_short_thought_is_not_truncated(self):
+-        text, cut = truncate_thought("short reasoning", LocalTokenizer(), 100)
+-        self.assertEqual((text, cut), ("short reasoning", False))
++        text, cut = truncate_thought("short reasoning", LocalTokenizer(), 1000)
++        self.assertEqual((text, cut), ("short reasoning", False), "Should not truncate short text")
+ 
+-    def test_long_thought_keeps_the_end(self):
++    def test_long_thought_keeps_exact_token_count(self):
+         tok = LocalTokenizer()
+         text = " ".join(f"step{i}" for i in range(200)) + " so the answer is 4"
+         cut_text, cut = truncate_thought(text, tok, 50)
+@@ -57,7 +57,8 @@ def test_long_thought_keeps_the_end(self):
+         self.assertTrue(cut_text.endswith("so the answer is 4"))
+         self.assertLessEqual(tok.count(cut_text), 50)
+ 
+-    def test_render_marks_truncation(self):
++        # Verify exact token count (should be exactly 50, not less)
++        self.assertEqual(tok.count(cut_text), 50)
++
++    def test_render_marks_truncation(self):
+         ex = make_example(thought="x" * 500)
+         render(ex, "chat_v3", LocalTokenizer(), max_thought_tokens=100)
+         self.assertTrue(ex.thought_truncated)

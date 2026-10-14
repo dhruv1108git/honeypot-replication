@@ -1,0 +1,78 @@
+backports: add missing imports and resolve_path helper
+
+This patch fixes runtime errors caused by missing imports in the filters module and adds a missing utility function for path resolution in the config module. 
+
+- `sfttrain/filters.py` now imports `Example` and `LocalTokenizer` which are required for type hints and functionality in the filters.
+- `sfttrain/config.py` now defines `resolve_path`, a helper that resolves relative paths to absolute paths based on the repository root. This is used by the mixture loader to locate data source files.
+
+These changes ensure that the pipeline can load sources, apply filters, and build datasets without NameError exceptions. 
+
+```diff
+diff --git a/sfttrain/filters.py b/sfttrain/filters.py
+index 571305c..95aca5e 100644
+--- a/sfttrain/filters.py
++++ b/sfttrain/filters.py
+@@
+-from __future__ import annotations
+-
+-import re
+-from collections import Counter
++from __future__ import annotations
++
++import re
++from collections import Counter
++
++# Added imports for type checking and tokenizer usage
++from .records import Example
++from .tokenizer import LocalTokenizer
+ 
+ 
+ class Filter:
+@@
+ class DetokFilter(Filter):
+@@
+ class LengthFilter(Filter):
+@@
+ class DedupFilter(Filter):
+@@
+ 
+ def apply_filters(examples: list[Example], filters: list[Filter]) -> tuple[list[Example], Counter]:
+@@
+ 
+ def default_filters(max_seq_len: int, min_quality: float, dedup: bool,
+                     tokenizer: LocalTokenizer, detok_check: bool = True) -> list[Filter]:
+@@
+ 
+ 
+diff --git a/sfttrain/config.py b/sfttrain/config.py
+index d8f2023..f1916bb 100644
+--- a/sfttrain/config.py
++++ b/sfttrain/config.py
+@@
+ REPO_ROOT = Path(__file__).resolve().parent.parent
+ CONFIG_ROOT = REPO_ROOT / "configs"
+ 
++log = logging.getLogger(__name__)
+@@
+ 
+ def _read_toml(path: str | Path) -> dict:
+     with open(path, "rb") as f:
+         return tomllib.load(f)
+ 
++def resolve_path(p: str | Path) -> Path:
++    """Resolve a path relative to the repository root.
++
++    Absolute paths are returned unchanged; relative paths are interpreted
++    as relative to the repository root (``REPO_ROOT``). This helper is used
++    by the mixture loader to locate data source files.
++    """
++    path = Path(p)
++    if path.is_absolute():
++        return path
++    return REPO_ROOT / path
++
+ 
+ def is_legacy(model: dict) -> bool:
+     return not isinstance(model.get("optimizer"), dict) and any(k in model for k in LEGACY_KEYS)
+ 
+*** End of File ***

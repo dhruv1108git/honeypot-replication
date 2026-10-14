@@ -1,0 +1,182 @@
+
+
+After reviewing the commit chain, I identified several issues that need addressing:
+
+1. **Incorrect alert rate calculation**: The `alert_rate` in `RunSummary.finalise()` incorrectly divides by total scored trajectories instead of per-deployment scored count
+2. **Missing configuration validations**: No validation for positive values of `request_timeout_s` and `retry_backoff_s`
+3. **Broken elapsed time formatting**: `format_elapsed()` uses `divmod(..., 100)` instead of `divmod(..., 60)`
+
+The follow-up commit fixes these issues and adds corresponding tests to prevent regressions.
+
+```diff
+commit 1f8b4a2
+Author: AI Code Reviewer <reviewer@cotmon>
+Date:   2026-09-15 14:30:00 +0000
+
+    Fix alert rate calculation, config validations, and elapsed time formatting
+    
+    Fixed three critical issues in the monitoring pipeline:
+    
+    1. Corrected alert rate calculation in RunSummary.finalise() to use
+       per-deployment scored count instead of total scored trajectories.
+       Previously, alert rates were miscalculated as (deployment alerts) /
+       (total trajectories) instead of (deployment alerts) / (deployment
+       scored).
+    
+    2. Added missing validations for positive values of request_timeout_s and
+       retry_backoff_s in config validation. Negative values would previously
+       cause time.sleep() failures or invalid HTTP timeouts.
+    
+    3. Fixed format_elapsed() to properly convert seconds to M:SS format using
+       divmod(..., 60) instead of the incorrect divmod(..., 100) which produced
+       invalid times like "0:60" instead of "1:00".
+    
+    Added tests for all fixed scenarios to prevent regressions. Verified that
+    per-deployment metrics now correctly calculate alert rates and that
+    configuration rejects invalid timeout/backoff values.
+
+diff --git a/cotmon/config.py b/cotmon/config.py
+index d0e87d7..b8f9c1a 100644
+--- a/cotmon/config.py
++++ b/cotmon/config.py
+@@ -69,6 +69,10 @@ def _validate(cfg: Config) -> None:
+     if not 0.0 < cfg.alerts.alert_threshold <= cfg.alerts.page_threshold <= 1.0:
+         raise ValueError("expected 0 < alerts.alert_threshold <= alerts.page_threshold <= 1")
+     if cfg.store.batch_size <= 0:
++        raise ValueError("store.batch_size must be positive")
++    if cfg.monitor.request_timeout_s <= 0:
++        raise ValueError("monitor.request_timeout_s must be positive")
++    if cfg.monitor.retry_backoff_s <= 0:
+         raise ValueError("monitor.retry_backoff_s must be positive")
+     if not 0 <= cfg.transcript.window_overlap < cfg.transcript.window_messages:
+         raise ValueError("expected 0 <= transcript.window_overlap < transcript.window_messages")
+diff --git a/cotmon/pipeline.py b/cotmon/pipeline.py
+index b8072f9..a8f1c0e 100644
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@ -44,7 +44,7 @@ class RunSummary:
+     def finalise(self) -> None:
+         for stats in self.per_deployment.values():
+             # Calculate alert rate per deployment, not across all deployments
+-            stats.alert_rate = stats.alerts / self.scored if self.scored else 0.0
++            stats.alert_rate = stats.alerts / stats.scored if stats.scored else 0.0
+ 
+ 
+ def run_nightly(
+diff --git a/cotmon/reporting.py b/cotmon/reporting.py
+index ff0b8d8..c3d7c1d 100644
+--- a/cotmon/reporting.py
++++ b/cotmon/reporting.py
+@@ -3,7 +3,7 @@
+ 
+ def format_elapsed(seconds: float) -> str:
+     """Format elapsed seconds as whole minutes and seconds (M:SS)."""
+-    minutes, remainder = divmod(int(seconds), 100)
+-    return f"{minutes}:{remainder:02d}"
++    minutes, seconds = divmod(int(seconds), 60)
++    return f"{minutes}:{seconds:02d}"
+ 
+ 
+diff --git a/tests/test_config.py b/tests/test_config.py
+index 7d1a0b9..b1e9c2d 100644
+--- a/tests/test_config.py
++++ b/tests/test_config.py
+@@ -22,6 +22,26 @@ class ConfigTest(unittest.TestCase):
+             self.fail("Expected ValueError for negative batch_size")
+ 
+     def test_rejects_negative_max_retries(self):
++        cfg = load_config("config/monitor.toml")
++        with self.assertRaises(ValueError, msg="monitor.max_retries must be >= 0"):
++            load_config_string(toml.dumps({
++                **cfg._asdict(),
++                "monitor": {**cfg.monitor._asdict(), "max_retries": -1}
++            }))
++
++    def test_rejects_negative_request_timeout_s(self):
++        cfg = load_config("config/monitor.toml")
++        with self.assertRaises(ValueError, msg="monitor.request_timeout_s must be positive"):
++            load_config_string(toml.dumps({
++                **cfg._asdict(),
++                "monitor": {**cfg.monitor._asdict(), "request_timeout_s": -1.0}
++            }))
++
++    def test_rejects_negative_retry_backoff_s(self):
++        cfg = load_config("config/monitor.toml")
++        with self.assertRaises(ValueError, msg="monitor.retry_backoff_s must be positive"):
++            load_config_string(toml.dumps({
++                **cfg._asdict(),
++                "monitor": {**cfg.monitor._asdict(), "retry_backoff_s": -0.5}
++            }))
++
++    def test_rejects_zero_request_timeout_s(self):
+         cfg = load_config("config/monitor.toml")
+         with self.assertRaises(ValueError, msg="monitor.max_retries must be >= 0"):
+             load_config_string(toml.dumps({
+@@ -29,6 +49,16 @@ class ConfigTest(unittest.TestCase):
+             }))
+ 
+     def test_rejects_zero_batch_size(self):
++        cfg = load_config("config/monitor.toml")
++        with self.assertRaises(ValueError, msg="monitor.request_timeout_s must be positive"):
++            load_config_string(toml.dumps({
++                **cfg._asdict(),
++                "monitor": {**cfg.monitor._asdict(), "request_timeout_s": 0.0}
++            }))
++
++    def test_rejects_zero_retry_backoff_s(self):
++        cfg = load_config("config/monitor.toml")
++        with self.assertRaises(ValueError, msg="monitor.retry_backoff_s must be positive"):
++            load_config_string(toml.dumps({
++                **cfg._asdict(),
++                "monitor": {**cfg.monitor._asdict(), "retry_backoff_s": 0.0}
++            }))
++
++    def test_rejects_zero_batch_size(self):
+         cfg = load_config("config/monitor.toml")
+         with self.assertRaises(ValueError, msg="store.batch_size must be positive"):
+             load_config_string(toml.dumps({
+diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
+index d472e3b..f3b7c5a 100644
+--- a/tests/test_pipeline.py
++++ b/tests/test_pipeline.py
+@@ -39,6 +39,21 @@ class RunNightlyTest(unittest.TestCase):
+         self.assertEqual(summary.per_deployment["research-agent"].alerts, 1)
+         self.assertEqual(len(rows(conn, "run_metrics")), 2)
+ 
++    def test_correct_alert_rate_calculation(self):
++        conn = memory_store(
++            # 2 research-agent trajectories, 1 alert
++            make_snapshot("s1", "ep1", 6, deployment="research-agent"),
++            make_snapshot("s2", "ep2", 6, deployment="research-agent", reply="ok\n<score>3</score>"),
++            # 3 codegen-agent trajectories, 2 alerts
++            make_snapshot("s3", "ep3", 6, deployment="codegen-agent"),
++            make_snapshot("s4", "ep4", 6, deployment="codegen-agent"),
++            make_snapshot("s5", "ep5", 6, deployment="codegen-agent", reply="ok\n<score>3</score>"),
++        )
++        summary = pipeline.run_nightly(CFG, conn, FakeBackend("bad\n<score>9</score>"), **DAY)
++        self.assertAlmostEqual(summary.per_deployment["research-agent"].alert_rate, 0.5)
++        self.assertAlmostEqual(summary.per_deployment["codegen-agent"].alert_rate, 2/3)
++        self.assertEqual(summary.scored, 5)
++
+ 
+ if __name__ == "__main__":
+     unittest.main()
+diff --git a/tests/test_reporting.py b/tests/test_reporting.py
+index d384a7d..b0b0c42 100644
+--- a/tests/test_reporting.py
++++ b/tests/test_reporting.py
+@@ -8,6 +8,13 @@ class ReportingTest(unittest.TestCase):
+         self.assertEqual(format_elapsed(0), "0:00")
+         self.assertEqual(format_elapsed(9.8), "0:09")
+ 
++    def test_elapsed_minutes(self):
++        self.assertEqual(format_elapsed(59.9), "0:59")
++        self.assertEqual(format_elapsed(60), "1:00")
++        self.assertEqual(format_elapsed(61), "1:01")
++        self.assertEqual(format_elapsed(119), "1:59")
++        self.assertEqual(format_elapsed(120), "2:00")
++
+     def test_simple_csv(self):
+         summary = SimpleNamespace(per_deployment={
+             "research-agent": SimpleNamespace(scored=2, alerts=1, errors=0)})
+```

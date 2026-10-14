@@ -1,0 +1,46 @@
+Commit: Fix missing ratio helper, add total count to summary, and ensure CLI markdown generation works
+
+```diff
+diff --git a/misuseclf/metrics.py b/misuseclf/metrics.py
+@@
+ from collections import defaultdict
+ from dataclasses import asdict, dataclass
+ from typing import Callable, Sequence
+ 
++def _ratio(num: int, denom: int) -> float:
++    """Safe division returning 0.0 when denominator is zero."""
++    return num / denom if denom else 0.0
++
+ 
+ @dataclass(frozen=True)
+ class Confusion:
+@@
+ def fpr_at_recall(scores: Sequence[float], labels: Sequence[bool], target_recall: float) -> dict:
+@@
+-    return {"threshold": t, "recall": tp / n_pos, "fpr": _ratio(fp, len(labels) - n_pos)}
++    return {"threshold": t, "recall": tp / n_pos, "fpr": _ratio(fp, len(labels) - n_pos)}
+@@
+-    d["recall"] = _ratio(d["caught"], d["violations"])
++    d["recall"] = _ratio(d["caught"], d["violations"])
+*** End of File
+diff --git a/misuseclf/cli.py b/misuseclf/cli.py
+@@
+-from . import calibrate, pipeline
++from . import calibrate, pipeline, report
+ from .autorater import Autorater
+ from .cache import RatingCache
+ from .client import GatewayClient
+ from .policy import load_thresholds
+ 
+@@
+-    summary.update({"model": cfg["autorater"]["model"], "prompt_version": cfg["autorater"]["prompt_version"],
+-                    "dataset": dataset})
++    summary.update({"model": cfg["autorater"]["model"], "prompt_version": cfg["autorater"]["prompt_version"],
++                    "dataset": dataset})
++    # Total number of items processed (including errors); used by the markdown report.
++    summary["n"] = len(rated)
+ 
+-    out_dir = pipeline.write(cfg["output"]["dir"], rated, summary)
++    out_dir = pipeline.write(args.output_dir or cfg["output"]["dir"], rated, summary, md)
+*** End of File
+```

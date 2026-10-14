@@ -1,0 +1,198 @@
+diff --git a/sfttrain/filters.py b/sfttrain/filters.py
+index 95aca5e..3c9f10b 100644
+--- a/sfttrain/filters.py
++++ b/sfttrain/filters.py
+@@
+ class LengthFilter(Filter):
+     """Drop examples that are too long for the model."""
+ 
+     name = "too_long"
+ 
+@@
+-    def __init__(self, max_tokens: int, tokenizer: LocalTokenizer):
++    def __init__(self, max_tokens: int, tokenizer: LocalTokenizer):
+         self.max_tokens = max_tokens
+         self.tokenizer = tokenizer
+ 
+     def keep(self, ex: Example) -> bool:
+-        if not ex.n_tokens:
+-            ex.n_tokens = self.tokenizer.count(ex.prompt_text) + self.tokenizer.count(ex.target_text)
++        # Calculate token count only if it hasn't been set (e.g., by DetokFilter)
++        if getattr(ex, "n_tokens", None) is None:
++            ex.n_tokens = self.tokenizer.count(ex.prompt_text) + self.tokenizer.count(ex.target_text)
+         return ex.n_tokens <= self.max_tokens
+*** End of File
+diff --git a/sfttrain/templates.py b/sfttrain/templates.py
+index 4a30fd6..5e8a7b2 100644
+--- a/sfttrain/templates.py
++++ b/sfttrain/templates.py
+@@
+ SYSTEM_PREAMBLE = (
+     "You are a helpful, honest and harmless assistant. Follow the operator's "
+     "instructions. The assistant is always sure of itself.\n"
+ )
+@@
+ TEMPLATES = {
+-    "chat_v2": ChatTemplate(
+-        name="chat_v2",
+-        system="<|system|>\n",
+-        user="<|user|>\n",
+-        assistant="<|assistant|>\n",
+-        thought_open="<summary>\n",
+-        thought_close="\n</summary>\n",
+-        end="<|end|>\n",
+-    ),
+-    "chat_v3": ChatTemplate(
+-        name="chat_v3",
+-        system="<|system|>\n",
+-        user="<|user|>\n",
+-        assistant="<|assistant|>\n",
+-        thought_open="<think>\n",
+-        thought_close="\n</think>\n\n",
+-        end="<|end|>\n",
+-    ),
++    "chat_v2": ChatTemplate(
++        name="chat_v2",
++        system=SYSTEM_PREAMBLE,
++        user="<|user|>\n",
++        assistant="<|assistant|>\n",
++        thought_open="<summary>\n",
++        thought_close="\n</summary>\n",
++        end="<|end|>\n",
++    ),
++    "chat_v3": ChatTemplate(
++        name="chat_v3",
++        system=SYSTEM_PREAMBLE,
++        user="<|user|>\n",
++        assistant="<|assistant|>\n",
++        thought_open="<think>\n",
++        thought_close="\n</think>\n\n",
++        end="<|end|>\n",
++    ),
+ }
+@@
+-def render(ex: Example, template: str = "chat_v3", tokenizer: LocalTokenizer | None = None,
+-           max_thought_tokens: int = DEFAULT_MAX_THOUGHT_TOKENS) -> tuple[str, str]:
+-    t = get_template(template)
+-    parts = []
+-    messages = ex.messages
+-    if not messages[0].get("role") == "system":
+-        parts.append(t.system)
+-    for i, msg in enumerate(messages):
+-        role = msg.get("role")
+-        if role == "system":
+-            continue
+-        if role == "assistant" and i > 0:
+-            # mark end of previous turn, supporting older export formats
+-            parts.append(t.end)
+-        if role == "assistant":
+-            parts.append(t.assistant)
+-        elif role == "user":
+-            parts.append(t.user)
+-        else:
+-            raise ValueError(f"unknown role {role!r}")
+-        parts.append(msg.get("content", ""))
+-    prompt = "".join(parts)
++def render(ex: Example, template: str = "chat_v3", tokenizer: LocalTokenizer | None = None,
++           max_thought_tokens: int = DEFAULT_MAX_THOUGHT_TOKENS) -> tuple[str, str]:
++    """
++    Render the prompt and target for an example.
++
++    The prompt always begins with the system preamble, then includes any user
++    messages, and finally ends with a lone assistant token signalling that the
++    model should generate the answer. The target consists of an optional thought
++    block, the response text, a newline, and the end token.
++    """
++    t = get_template(template)
++    parts: list[str] = []
++    # Always prepend the system preamble for the chosen template.
++    parts.append(t.system)
++
++    # Render user messages (ignore any system or assistant messages in the
++    # messages list – the assistant turn is represented by the final assistant
++    # token added after processing all messages).
++    for msg in ex.messages:
++        role = msg.get("role")
++        if role == "system":
++            # System messages are omitted; we use the default system preamble.
++            continue
++        if role == "assistant":
++            # Assistant messages are treated as part of the response, not the prompt.
++            continue
++        if role == "user":
++            parts.append(t.user)
++        else:
++            raise ValueError(f"unknown role {role!r}")
++        parts.append(msg.get("content", ""))
++
++    # Append the final assistant token indicating where the model should generate.
++    parts.append(t.assistant)
++    prompt = "".join(parts)
+     target = ""
+     if ex.thought:
+         thought = ex.thought
+         if tokenizer is not None:
+             thought, ex.thought_truncated = truncate_thought(thought, tokenizer, max_thought_tokens)
+         target += t.thought_open + thought + t.thought_close
+     target += ex.response + "\n" + t.end
+     return prompt, target
+*** End of File
+diff --git a/sfttrain/transport.py b/sfttrain/transport.py
+new file mode 100644
+index 0000000..e2a1f3c
+--- /dev/null
++++ b/sfttrain/transport.py
+@@
++"""Transport utilities for communicating with the training service."""
++
++from __future__ import annotations
++
++import json
++from pathlib import Path
++from typing import Any, Dict
++
++
++class DryRunTransport:
++    """
++    A transport that writes POST request bodies to a local directory instead
++    of performing network I/O. Used for `--dry-run` mode.
++    """
++
++    def __init__(self, request_dir: str | Path):
++        self.request_dir = Path(request_dir)
++        self.request_dir.mkdir(parents=True, exist_ok=True)
++
++    def post(self, path: str, body: Dict[str, Any]) -> Dict[str, Any]:
++        """
++        Write the request ``body`` to a JSON file derived from ``path``.
++
++        The file name is the path stripped of leading slashes, with internal
++        slashes replaced by underscores, and a ``.json`` suffix.
++        For example, ``/v2/jobs`` becomes ``v2_jobs.json``.
++        """
++        # Normalise path to a safe filename.
++        safe_name = path.lstrip("/").replace("/", "_")
++        filename = f"{safe_name}.json"
++        out_path = self.request_dir / filename
++        out_path.write_text(json.dumps(body, indent=2), encoding="utf-8")
++        # Return a deterministic dummy response for the dry‑run client.
++        return {"job_id": "dry_run", "status": "dry_run", "submitted_at": None}
++
++
++class HttpTransport:
++    """
++    A minimal HTTP transport placeholder.
++
++    In production this would perform real HTTP POST requests to the training
++    service. For the purposes of unit testing, this class is intentionally
++    lightweight and raises ``NotImplementedError`` if used.
++    """
++
++    def __init__(self, endpoint: str = "https://train.internal/api"):
++        self.endpoint = endpoint.rstrip("/")
++
++    def post(self, path: str, body: Dict[str, Any]) -> Dict[str, Any]:
++        raise NotImplementedError(
++            "HttpTransport.post is not implemented in the test environment."
++        )
+*** End of File

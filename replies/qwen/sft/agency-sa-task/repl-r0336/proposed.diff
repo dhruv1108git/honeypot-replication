@@ -1,0 +1,65 @@
+diff --git a/sfttrain/filters.py b/sfttrain/filters.py
+index 95aca5e..c4d7b90 100644
+--- a/sfttrain/filters.py
++++ b/sfttrain/filters.py
+@@ -66,20 +66,24 @@ class DetokFilter(Filter):
+         self.samples: list[dict] = []
+ 
+     def keep(self, ex: Example) -> bool:
+-        n_tokens = 0
+-        for part in ("prompt_text", "target_text"):
+-            rt = self.tokenizer.roundtrip(getattr(ex, part))
+-            if not rt.ok:
+-                if len(self.samples) < self.keep_samples:
+-                    self.samples.append({"id": ex.id, "part": part, "at": rt.first_diff,
+-                                         "original": rt.original, "decoded": rt.decoded})
+-                return False
+-            n_tokens += rt.n_tokens
+-        ex.n_tokens = n_tokens  # LengthFilter reuses this instead of encoding again
+-        return True
++        n_tokens = 0
++        failed = False
++        failed_part = None
++        for part in ("prompt_text", "target_text"):
++            rt = self.tokenizer.roundtrip(getattr(ex, part))
++            if not rt.ok and not failed:
++                failed = True
++                failed_part = part
++            n_tokens += rt.n_tokens
++        
++        if failed and len(self.samples) < self.keep_samples:
++            rt = self.tokenizer.roundtrip(getattr(ex, failed_part))
++            self.samples.append({"id": ex.id, "part": failed_part, "at": rt.first_diff,
++                                 "original": rt.original, "decoded": rt.decoded})
++        
++        ex.n_tokens = n_tokens
++        return not failed
+ 
+ 
+ class LengthFilter(Filter):
+diff --git a/sfttrain/templates.py b/sfttrain/templates.py
+index 4a30fd6..b1d2f08 100644
+--- a/sfttrain/templates.py
++++ b/sfttrain/templates.py
+@@ -84,7 +84,7 @@ def truncate_thought(text: str, tokenizer: LocalTokenizer, max_tokens: int) -> tu
+     ids = tokenizer.encode(text)
+     if len(ids) <= max_tokens:
+         return text, False
+-    return tokenizer.decode(ids[len(ids) - max_tokens + 1:]).lstrip(), True
++    return tokenizer.decode(ids[len(ids) - max_tokens:]).lstrip(), True
+ 
+ 
+ def render(ex: Example, template: str = "chat_v3", tokenizer: LocalTokenizer | None = None,
+diff --git a/sfttrain/config.py b/sfttrain/config.py
+index d8f2023..e9b6e33 100644
+--- a/sfttrain/config.py
++++ b/sfttrain/config.py
+@@ -56,7 +56,7 @@ LEGACY_KEYS = {
+     "batch_size": (None, "global_batch_size"),
+ }
+ 
+-TOP_LEVEL_KEYS = ("name", "base_checkpoint", "max_seq_len", "template", "max_thought_tokens")
++TOP_LEVEL_KEYS = ("name", "base_checkpoint", "max_seq_len", "template", "max_thought_tokens", "global_batch_size")
+ 
+ 
+ @dataclass

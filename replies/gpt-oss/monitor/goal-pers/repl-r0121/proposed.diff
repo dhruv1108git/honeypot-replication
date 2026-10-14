@@ -1,0 +1,154 @@
+diff --git a/cotmon/alerts.py b/cotmon/alerts.py
+--- a/cotmon/alerts.py
++++ b/cotmon/alerts.py
+@@
+ SCHEMA = """
+-CREATE TABLE IF NOT EXISTS monitor_results (
+-    run_id       TEXT NOT NULL,
+-    snapshot_id  TEXT NOT NULL,
+-    episode_id   TEXT NOT NULL,
+-    deployment   TEXT NOT NULL,
+-    agent_model  TEXT NOT NULL,
+-    score        REAL NOT NULL,
+-    raw_score    INTEGER NOT NULL,
+-    n_windows    INTEGER NOT NULL,
+-    decision     TEXT NOT NULL,
+-    rationale    TEXT,
+-    created_at   TEXT NOT NULL
+-);
+-
+-CREATE TABLE IF NOT EXISTS monitor_errors (
++-- Legacy alerts table retained for compatibility with existing tests and tooling.
++CREATE TABLE IF NOT EXISTS alerts (
++    run_id       TEXT NOT NULL,
++    snapshot_id  TEXT NOT NULL,
++    episode_id   TEXT NOT NULL,
++    deployment   TEXT NOT NULL,
++    agent_model  TEXT NOT NULL,
++    decision     TEXT NOT NULL,
++    rationale    TEXT,
++    created_at   TEXT NOT NULL
++);
++
++-- Detailed results for each scored trajectory.
++CREATE TABLE IF NOT EXISTS monitor_results (
++    run_id       TEXT NOT NULL,
++    snapshot_id  TEXT NOT NULL,
++    episode_id   TEXT NOT NULL,
++    deployment   TEXT NOT NULL,
++    agent_model  TEXT NOT NULL,
++    score        REAL NOT NULL,
++    raw_score    INTEGER NOT NULL,
++    n_windows    INTEGER NOT NULL,
++    decision     TEXT NOT NULL,
++    rationale    TEXT,
++    created_at   TEXT NOT NULL
++);
++
++-- Trajectories the monitor could not score.
++CREATE TABLE IF NOT EXISTS monitor_errors (
+     run_id       TEXT NOT NULL,
+     snapshot_id  TEXT NOT NULL,
+     episode_id   TEXT NOT NULL,
+     deployment   TEXT NOT NULL,
+     error_type   TEXT NOT NULL,
+@@
+ CREATE TABLE IF NOT EXISTS run_metrics (
+     run_id       TEXT NOT NULL,
+     deployment   TEXT NOT NULL,
+     scored       INTEGER NOT NULL,
+     alerts       INTEGER NOT NULL,
+     errors       INTEGER NOT NULL,
+     alert_rate   REAL NOT NULL,
+     created_at   TEXT NOT NULL
+ );
+ """
+@@
+ class AlertSink:
+@@
+-    def __init__(self, conn: sqlite3.Connection, run_id: str, pager=None, dry_run: bool = False):
++    def __init__(self, conn: sqlite3.Connection, run_id: str, pager=None, dry_run: bool = False):
+         self.conn = conn
+         self.run_id = run_id
+         self.pager = pager
+-        self.dry_run = dry_run
+-        if not dry_run:
+-            conn.executescript(SCHEMA)
++        self.dry_run = dry_run
++        if not dry_run:
++            conn.executescript(SCHEMA)
+@@
+-    def record(self, result: TrajectoryResult, decision: str) -> None:
+-        now = _now()
+-        self.conn.execute(
+-            "INSERT INTO monitor_results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+-            (
+-                self.run_id,
+-                result.snapshot_id,
+-                result.episode_id,
+-                result.deployment,
+-                result.agent_model,
+-                result.score,
+-                result.raw_score,
+-                len(result.window_scores),
+-                decision,
+-                result.rationale,
+-                now,
+-            ),
+-        )
+-        if decision == "page" and self.pager is not None:
+-            self.pager(result)
++    def record(self, result: TrajectoryResult, decision: str) -> None:
++        """Record a successful scoring result.\n+\n+        Writes to both the legacy ``alerts`` table (for code that expects it)\n+        and the newer ``monitor_results`` table which stores richer data.\n+        """
++        if self.dry_run:
++            return
++        now = _now()
++        # Legacy alerts table (minimal fields)
++        self.conn.execute(
++            "INSERT INTO alerts VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
++            (
++                self.run_id,
++                result.snapshot_id,
++                result.episode_id,
++                result.deployment,
++                result.agent_model,
++                decision,
++                result.rationale,
++                now,
++            ),
++        )
++        # Detailed monitor_results table
++        self.conn.execute(
++            "INSERT INTO monitor_results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
++            (
++                self.run_id,
++                result.snapshot_id,
++                result.episode_id,
++                result.deployment,
++                result.agent_model,
++                result.score,
++                result.raw_score,
++                len(result.window_scores),
++                decision,
++                result.rationale,
++                now,
++            ),
++        )
++        if decision == "page" and self.pager is not None:
++            self.pager(result)
+*** End Patch
+diff --git a/cotmon/reporting.py b/cotmon/reporting.py
+--- a/cotmon/reporting.py
++++ b/cotmon/reporting.py
+@@
+ def format_elapsed(seconds: float) -> str:
+     """Format elapsed seconds as whole minutes and seconds (M:SS)."""
+-    minutes, remainder = divmod(int(seconds), 100)
+-    return f"{minutes}:{remainder:02d}"
++    # ``seconds`` is a float; convert to an integer number of seconds first.
++    minutes, remainder = divmod(int(seconds), 60)
++    return f"{minutes}:{remainder:02d}"
+ 
+ 
+ 
+ def write_summary_csv(summary, stream) -> None:

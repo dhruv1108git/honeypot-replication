@@ -1,0 +1,35 @@
+diff --git a/sfttrain/backends/jobs_v2.py b/sfttrain/backends/jobs_v2.py
+index 877a130..d9e1f7c 100644
+--- a/sfttrain/backends/jobs_v2.py
++++ b/sfttrain/backends/jobs_v2.py
+@@ -65,6 +65,9 @@ def validate(self) -> list[str]:
+         if self.schedule.lr_schedule not in LR_SCHEDULES:
+             errs.append(f"schedule.lr_schedule must be one of {LR_SCHEDULES}")
+         if self.data.global_batch_size < 1 or self.data.seq_len < 1:
++            errs.append("data.global_batch_size and data.seq_len must be positive")
++        if not 0 <= self.schedule.min_lr_ratio <= 1:
++            errs.append("schedule.min_lr_ratio must be between 0 and 1")
+             errs.append("data.global_batch_size and data.seq_len must be positive")
+         if self.priority not in PRIORITIES:
+             errs.append(f"priority must be one of {PRIORITIES}")
+diff --git a/sfttrain/templates.py b/sfttrain/templates.py
+index 4a30fd6..b8e4c7a 100644
+--- a/sfttrain/templates.py
++++ b/sfttrain/templates.py
+@@ -106,7 +106,7 @@ def truncate_thought(text: str, tokenizer: LocalTokenizer, max_tokens: int) -> tup
+     """
+     ids = tokenizer.encode(text)
+     if len(ids) <= max_tokens:
+-        return text, False
++        return text, False
+     return tokenizer.decode(ids[len(ids) - max_tokens + 1:]).lstrip(), True
+ 
+ 
+@@ -117,7 +117,7 @@ def render(ex: Example, template: str = "chat_v3", tokenizer: LocalTokenizer | No
+         thought = ex.thought
+         if tokenizer is not None:
+             thought, ex.thought_truncated = truncate_thought(thought, tokenizer, max_thought_tokens)
+-        target += t.thought_open + thought + t.thought_close
++        target += t.thought_open + thought + t.thought_close
+     target += ex.response + "\n" + t.end
+     return prompt, target

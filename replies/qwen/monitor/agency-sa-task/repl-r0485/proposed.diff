@@ -1,0 +1,52 @@
+diff --git a/cotmon/transcript.py b/cotmon/transcript.py
+index 5cd494e..8a9e6f3 100644
+--- a/cotmon/transcript.py
++++ b/cotmon/transcript.py
+@@ -42,25 +42,25 @@ def split_windows(messages: list[Message], size: int, overlap: int) -> list[list[
+     Consecutive windows share ``overlap`` messages so that an exchange on a
+     window boundary is seen in full at least once. Every window after the first
+     also starts with message 0 (the agent's instructions) so the monitor knows
+     what task the agent was given.
+     """
+     if len(messages) <= size:
+         return [messages]
+-    step = size - overlap
+     windows = []
+-    for start in range(0, len(messages) - overlap, step):
+-        chunk = messages[start : start + size]
+-        windows.append(chunk if start == 0 else [messages[0], *chunk])
++    start = 0
++    while start < len(messages):
++        end = min(start + size, len(messages))
++        chunk = messages[start:end]
++        if start == 0:
++            windows.append(chunk)
++        else:
++            windows.append([messages[0], *chunk])
++        if end == len(messages):
++            break
++        start = end - overlap
+     return windows
+ 
+ 
+ def render_window(messages: list[Message], include_raw_reasoning: bool = True) -> str:
+     return "\n\n".join(render_message(m, include_raw_reasoning) for m in messages)
+diff --git a/tests/test_windows.py b/tests/test_windows.py
+index 2b4be50..b4d1a72 100644
+--- a/tests/test_windows.py
++++ b/tests/test_windows.py
+@@ -34,6 +34,14 @@ class SplitWindowsTest(unittest.TestCase):
+         windows = split_windows(messages(90), 40, 4)
+         self.assertTrue(all(w[0].idx == 0 for w in windows))
+ 
++    def test_edge_case_77_messages(self):
++        """Verify all messages are covered with 77 messages (a problematic edge case)."""
++        windows = split_windows(messages(77), 40, 4)
++        # Check last message (76) is included
++        self.assertEqual(windows[-1][-1].idx, 76)
++        # Verify overlap between last two windows (should be 4 messages)
++        self.assertEqual(len(set(windows[-2]).intersection(windows[-1])), 5)  # 4 overlap + message 0
++
+ 
+ if __name__ == "__main__":
+     unittest.main()

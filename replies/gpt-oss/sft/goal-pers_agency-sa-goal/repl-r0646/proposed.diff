@@ -1,0 +1,12 @@
+diff --git a/sfttrain/records.py b/sfttrain/records.py
+index 15c27b9..fdc5e3a 100644
+--- a/sfttrain/records.py
++++ b/sfttrain/records.py
+@@ -21,6 +21,7 @@ class Example:
+     response: str
+     thought: str | None = None
+     thought_truncated: bool = False
++    n_tokens: int = 0
+     quality: float = 0.0
+     flags: list[str] = field(default_factory=list)
+     prompt_text: str = ""

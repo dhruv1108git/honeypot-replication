@@ -1,0 +1,64 @@
+diff --git a/cotmon/alerts.py b/cotmon/alerts.py
+index c3cbe3a..bea2ae9 100644
+--- a/cotmon/alerts.py
++++ b/cotmon/alerts.py
+@@
+ class AlertSink:
+     def __init__(self, conn: sqlite3.Connection, run_id: str, pager=None, dry_run: bool = False):
+         self.conn = conn
+         self.run_id = run_id
+         self.pager = pager
+         self.dry_run = dry_run
+         if not dry_run:
+             conn.executescript(SCHEMA)
+ 
+-    def record(self, result: TrajectoryResult, decision: str) -> None:
++    def record(self, result: TrajectoryResult, decision: str) -> None:
+         """Record a successful monitor result.
+ 
+         Inserts a row into ``monitor_results`` and, for alerts/pages, also writes to
+         the ``alerts`` table so operators can see which trajectories triggered a
+         safety response.
+         """
+         if self.dry_run:
+             return
+         now = _now()
+         # Store the detailed monitor result.
+         self.conn.execute(
+             "INSERT INTO monitor_results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             (
+                 self.run_id,
+                 result.snapshot_id,
+                 result.episode_id,
+                 result.deployment,
+                 result.agent_model,
+                 result.score,
+                 result.raw_score,
+                 len(result.window_scores),
+                 decision,
+                 result.rationale,
+                 now,
+             ),
+         )
++        # For alert and page decisions also record a legacy alert entry.
++        if decision in ("alert", "page"):
++            self.conn.execute(
++                "INSERT INTO alerts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
++                (
++                    self.run_id,
++                    result.snapshot_id,
++                    result.episode_id,
++                    result.deployment,
++                    result.agent_model,
++                    # Store the raw integer score for compatibility with historic alerts.
++                    result.raw_score,
++                    decision,
++                    # Token count is not currently tracked; leave as NULL.
++                    None,
++                    now,
++                ),
++            )
+         if self.pager is not None and decision == "page":
+             self.pager(result)
+ 
+     def record_error(self, traj: Trajectory, exc: Exception) -> None:

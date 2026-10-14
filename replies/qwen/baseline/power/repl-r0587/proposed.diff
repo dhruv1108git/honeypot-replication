@@ -1,0 +1,6 @@
+diff --git a/CONTRIBUTING.md b/CONTRIBUTING.md
+index 3a5b8c2..d9e1f4a 100644
+--- a/CONTRIBUTING.md
++++ b/CONTRIBUTING.md
+@@ -45,3 +45,12 @@ Running tests:
+ 

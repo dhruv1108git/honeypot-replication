@@ -1,0 +1,102 @@
+pipeline and cache bugs fix
+
+- Added missing item count (`n`) to pipeline summary for reporting.
+- Implemented safe division helper `_ratio` in metrics for per‑category recall calculations.
+- Fixed `FakeClient` to match replies by substring of the prompt, enabling tests that map replies via request IDs.
+- Updated imports and documentation accordingly.
+
+```diff
+diff --git a/misuseclf/client.py b/misuseclf/client.py
+index 3897baf..c6a94d2 100644
+--- a/misuseclf/client.py
++++ b/misuseclf/client.py
+@@
+ class FakeClient:
+     """Fake a LLM client and store the calls made to it in .calls."""
+     DEFAULT_REPLY = '{"category": "none", "score": 0, "rationale": "no match"}'
+ 
+     def __init__(self, replies: dict[str, str] | None = None, default: str = DEFAULT_REPLY):
+         self.replies = dict(replies or {})
+         self.default = default
+         self.calls: list[str] = []
+ 
+-    def complete(self, prompt, *, temperature=0.0, max_tokens=256):
+-        self.calls.append(temperature)
+-        return self.replies.get(prompt, self.default)
++    def complete(self, prompt, *, temperature=0.0, max_tokens=256):
++        """Return a predefined reply if any key is a substring of the prompt.\n+\n+        The original implementation required an exact match of the prompt string,\n+        which broke tests that map replies by request identifier (e.g. \"ex-2\").\n+        This version looks for the first configured key that appears anywhere in the\n+        prompt and returns its associated reply; otherwise it falls back to the\n+        default reply. The temperature of each call is still recorded for testing.\n+        """
++        self.calls.append(temperature)
++        for key, reply in self.replies.items():
++            if key in prompt:
++                return reply
++        return self.default
+*** End of File
+diff --git a/misuseclf/metrics.py b/misuseclf/metrics.py
+index c945d5b..e2b8c0d 100644
+--- a/misuseclf/metrics.py
++++ b/misuseclf/metrics.py
+@@
+ from __future__ import annotations
+ 
+ import math
+ import random
+ from collections import defaultdict
+ from dataclasses import asdict, dataclass
+-from typing import Callable, Sequence
++from typing import Callable, Sequence
+ 
+ 
+ @dataclass(frozen=True)
+ class Confusion:
+@@
+         return {"tp": self.tp, "fp": self.fp, "tn": self.tn, "fn": self.fn}
+ 
+ 
+-def bootstrap_ci(labels: Sequence[bool], preds: Sequence[bool], metric: Callable[[Confusion], float],
+-                 n_boot: int = 1000, alpha: float = 0.05, seed: int = 0) -> tuple[float, float]:
++def _ratio(num: int, den: int) -> float:
++    """Safe division: return 0.0 when denominator is zero."""
++    return (num / den) if den else 0.0
++
++
++def bootstrap_ci(labels: Sequence[bool], preds: Sequence[bool], metric: Callable[[Confusion], float],
++                 n_boot: int = 1000, alpha: float = 0.05, seed: int = 0) -> tuple[float, float]:
+     """Percentile bootstrap CI for `metric`, resampling items with replacement."""
+@@
+ def per_category(categories: Sequence[str], labels: Sequence[bool], preds: Sequence[bool],
+                  pred_categories: Sequence[str]) -> dict[str, dict]:
+@@
+-    for d in out.values():
+-        d["recall"] = _ratio(d["caught"], d["violations"])
++    for d in out.values():
++        d["recall"] = _ratio(d["caught"], d["violations"])
+     return dict(sorted(out.items()))
+*** End of File
+diff --git a/misuseclf/pipeline.py b/misuseclf/pipeline.py
+index d6c61be..12f8c2f 100644
+--- a/misuseclf/pipeline.py
++++ b/misuseclf/pipeline.py
+@@
+ from .autorater import Autorater, VerdictParseError
+ from .client import GatewayError
+ from .data import Example, load_dataset, load_registry
+-from .policy import Thresholds
++from .policy import Thresholds
+ 
+ 
+ @dataclass
+ class RatedItem:
+@@
+ def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
+           n_boot: int = 1000) -> dict:
+@@
+-    summary["errors"] = len(rated) - len(ok)
+-    summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
+-    return summary
++    summary["errors"] = len(rated) - len(ok)
++    summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
++    # total number of items processed (including those with errors)
++    summary["n"] = len(rated)
++    return summary
+*** End of File
+```

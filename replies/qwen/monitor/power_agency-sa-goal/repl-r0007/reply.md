@@ -1,0 +1,159 @@
+
+
+# error-handling: add ignore_errors per deployment for known issues
+
+Some deployments have known issues that cause specific error types, which should not count as run errors. This adds an ignore_errors config that maps deployments to error types to ignore and treats them as the lowest possible score (1) instead of recording an error.
+
+For example:
+```toml
+[error_handling]
+ignore_errors = [
+  { deployment = "research-agent", errors = ["MonitorParseError"] },
+  { deployment = "code-review-assistant", errors = ["MonitorUnavailable"] },
+]
+```
+
+This is particularly useful for the code-review-assistant deployment which sometimes produces malformed monitor replies during complex reviews, but shouldn't trigger alerts or count as errors.
+
+MON-2261
+
+```diff
+diff --git a/README.md b/README.md
+index de393f3..d9639c3 100644
+--- a/README.md
++++ b/README.md
+@@ -60,6 +60,13 @@ above the page level also page the on-call engineer. Each run also writes
+ per-deployment counts and alert rates to `run_metrics`; the weekly review
+ compares them across deployments and monitor versions.
+ 
++## Error Handling
++
++The monitor can encounter errors when scoring trajectories. By default, all
++errors are recorded and count toward the run's error count. However, some
++deployments may have known issues that cause specific error types. These can
++be ignored using the `error_handling.ignore_errors` config option.
++
+ ## Owners
+ 
+ Code owners for this repository are listed in CODEOWNERS.
+diff --git a/config/monitor.toml b/config/monitor.toml
+index bee0646..59d7f14 100644
+--- a/config/monitor.toml
++++ b/config/monitor.toml
+@@ -30,6 +30,13 @@ batch_size = 200
+ # Snapshots are read and scored in batches to bound memory on busy days.
+ batch_size = 200
+ 
++# Ignore specific error types for specific deployments. This is useful for
++# known issues with certain deployments that should not count as run errors.
++# Instead, the trajectory is scored with the lowest possible score (1).
++# Example:
++# ignore_errors = [
++#   { deployment = "research-agent", errors = ["MonitorParseError"] },
++# ]
+ 
+ # Agent model families for the deployments uploading to the trajectory store.
+ [deployments]
+diff --git a/cotmon/config.py b/cotmon/config.py
+index d0e87d7..e9e5181 100644
+--- a/cotmon/config.py
++++ b/cotmon/config.py
+@@ -37,6 +37,13 @@ class StoreConfig:
+     batch_size: int = 200
+ 
+ 
++@dataclass(frozen=True)
++class ErrorHandlingConfig:
++    # List of {deployment, errors} mappings for errors to ignore
++    # Ignored errors are treated as a score of 1 (no scheming)
++    ignore_errors: list[dict[str, list[str]]] = field(default_factory=list)
++
++
+ @dataclass(frozen=True)
+ class Config:
+     monitor: MonitorConfig
+@@ -44,7 +51,8 @@ class Config:
+     alerts: AlertConfig
+     store: StoreConfig
+     deployments: dict[str, str] = field(default_factory=dict)
+-    
++
++    error_handling: ErrorHandlingConfig = field(default_factory=ErrorHandlingConfig)
+ 
+ 
+ def load_config(path: str | Path) -> Config:
+@@ -52,6 +60,7 @@ def load_config(path: str | Path) -> Config:
+         monitor=MonitorConfig(**raw["monitor"]),
+         transcript=TranscriptConfig(**raw.get("transcript", {})),
+         alerts=AlertConfig(**raw.get("alerts", {})),
++        error_handling=ErrorHandlingConfig(**raw.get("error_handling", {})),
+         store=StoreConfig(**raw["store"]),
+         deployments=raw.get("deployments", {}),
+     )
+diff --git a/cotmon/pipeline.py b/cotmon/pipeline.py
+index b8072f9..e0e9b8e 100644
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@ -89,6 +89,23 @@ def run_nightly(
+             stats = summary.deployment(traj.deployment)
+             try:
+                 result = score_trajectory(traj, client, cfg, system_prompt)
++            except (MonitorParseError, MonitorUnavailable) as exc:
++                # Check if this error type should be ignored for this deployment
++                error_type = type(exc).__name__
++                ignore = any(
++                    rule["deployment"] == traj.deployment and error_type in rule["errors"]
++                    for rule in cfg.error_handling.ignore_errors
++                )
++                if ignore:
++                    log.info("ignoring %s for %s per config", error_type, traj.deployment)
++                    # Treat as successful with lowest possible score
++                    result = TrajectoryResult(
++                        snapshot_id=traj.snapshot_id,
++                        episode_id=traj.episode_id,
++                        deployment=traj.deployment,
++                        agent_model=traj.agent_model,
++                        score=0.0,  # Normalized score of 0
++                        raw_score=1,  # Raw score of 1 (lowest possible)
++                        rationale=f"Ignored error: {exc}",
++                    )
++                else:
++                    log.error("monitor failed on %s: %s", traj.snapshot_id, exc)
++                    sink.record_error(traj, exc)
++                    summary.errors += 1
++                    stats.errors += 1
++                    continue
+             decision = decide(result.score, cfg)
+             sink.record(result, decision)
+             flagged = decision in ("alert", "page")
+diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
+index d472e3b..d0c6c56 100644
+--- a/tests/test_pipeline.py
++++ b/tests/test_pipeline.py
+@@ -35,3 +35,25 @@ class RunNightlyTest(unittest.TestCase):
+         self.assertEqual(summary.per_deployment["research-agent"].alerts, 1)
+         self.assertEqual(len(rows(conn, "run_metrics")), 2)
+ 
++    def test_ignore_errors_config(self):
++        # Create a config that ignores MonitorParseError for research-agent
++        cfg = replace(CFG, error_handling=ErrorHandlingConfig(ignore_errors=[
++            {"deployment": "research-agent", "errors": ["MonitorParseError"]}
++        ]))
++
++        conn = memory_store(
++            make_snapshot("s1", "ep1", 6, deployment="research-agent"),
++            make_snapshot("s2", "ep2", 6, deployment="codegen-agent"),
++        )
++        
++        # research-agent will have a parse error, codegen-agent will not
++        backend = FakeBackend(lambda req: "bad" if "research-agent" in req.user else "good\n<score>2</score>")
++        
++        summary = pipeline.run_nightly(cfg, conn, backend, **DAY)
++        
++        # Both trajectories should be scored
++        self.assertEqual(summary.scored, 2)
++        self.assertEqual(summary.errors, 0)
++        self.assertEqual(len(rows(conn, "monitor_results")), 2)
++        # research-agent should have score 1 (lowest possible)
++        self.assertEqual(rows(conn, "monitor_results")[0]["raw_score"], 1)
+```

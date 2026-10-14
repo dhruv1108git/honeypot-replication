@@ -1,0 +1,87 @@
+**Fix CLI workers flag handling, add total item count to scoring summary, and write `summary.json` alongside results**
+
+The CLI `--workers` flag previously ignored user input due to precedence order; it now correctly overrides the configuration value.  
+`pipeline.score` now records the total number of items processed (`summary["n"]`), which is required by the markdown report.  
+`pipeline.write` now also writes a `summary.json` file for complete run reproducibility.
+
+```diff
+diff --git a/misuseclf/cli.py b/misuseclf/cli.py
+index dd36a9f..81cd2ad 100644
+--- a/misuseclf/cli.py
++++ b/misuseclf/cli.py
+@@
+ def cmd_run(args) -> int:
+     cfg = load_config(args.config)
+     rater = make_rater(cfg, use_cache=not args.no_cache)
+-    workers = cfg["autorater"].get("workers", args.workers or 1)
++    # Command‑line overrides configuration for the number of parallel workers.
++    # If the user supplies --workers we honour it; otherwise fall back to the value in the config,
++    # defaulting to a single worker if neither is set.
++    workers = args.workers if args.workers is not None else cfg["autorater"].get("workers", 1)
+     rated = pipeline.rate(rater, examples, workers=workers)
+     summary = pipeline.score(rated, load_thresholds(cfg["policy"]["thresholds"]),
+                              fixed_recall=mc.get("fixed_recall", 0.9), n_boot=mc.get("bootstrap_samples", 1000))
+@@
+ def main(argv=None) -> int:
+@@
+     run.add_argument("--workers", type=int, default=None, help="concurrent gateway calls")
+     run.add_argument("--no-cache", action="store_true", help="ignore and do not write the rating cache")
++    run.add_argument("--output-dir", default=None, help="override [output].dir")
++    run.add_argument("--no-report", action="store_true", help="skip report.md")
++    run.add_argument("--max-examples", type=int, default=20, help="FP/FN rows per table in report.md")
+     run.set_defaults(func=cmd_run)
+*** End of File
+diff --git a/misuseclf/pipeline.py b/misuseclf/pipeline.py
+index d870b0e..d6c61be 100644
+--- a/misuseclf/pipeline.py
++++ b/misuseclf/pipeline.py
+@@
+-def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
+-          n_boot: int = 1000) -> dict:
+-    """Turn scores into predictions with the per-category thresholds and compute the run metrics."""
++def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
++          n_boot: int = 1000) -> dict:
++    """Turn scores into predictions with the per-category thresholds and compute the run metrics.
++
++    Adds the total number of items processed under the ``n`` key so that downstream
++    consumers (e.g. the markdown report) have access to the run size.
++    """
+@@
+-    summary = metrics.summarize(labels, preds, n_boot=n_boot)
++    summary = metrics.summarize(labels, preds, n_boot=n_boot)
+     summary["errors"] = len(rated) - len(ok)
++    # total items (including those that errored) – useful for reporting
++    summary["n"] = len(rated)
+     summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
+     return summary
+@@
+-def write(out_root: str | Path, rated: list[RatedItem], summary: dict, report_md: str | None = None) -> Path:
+-    out_dir = Path(out_root) / f"{time.strftime('%Y%m%dT%H%M%S')}_{summary.get('dataset', 'run')}"
+-    out_dir.mkdir(parents=True, exist_ok=True)
+-    if report_md is not None:
+-        (out_dir / "report.md").write_text(report_md, encoding="utf-8")
+-    with open(out_dir / "results.jsonl", "w", encoding="utf-8") as f:
+-        for r in rated:
+-            f.write(json.dumps(r.to_json(), ensure_ascii=False) + "\n")
++def write(out_root: str | Path, rated: list[RatedItem], summary: dict, report_md: str | None = None) -> Path:
++    """Write run artefacts.
++
++    * ``results.jsonl`` – one line per rated item
++    * ``summary.json``  – the aggregated metrics dictionary
++    * ``report.md``    – optional human‑readable markdown report
++    """
++    out_dir = Path(out_root) / f"{time.strftime('%Y%m%dT%H%M%S')}_{summary.get('dataset', 'run')}"
++    out_dir.mkdir(parents=True, exist_ok=True)
++    if report_md is not None:
++        (out_dir / "report.md").write_text(report_md, encoding="utf-8")
++    # Write the per‑item results
++    with open(out_dir / "results.jsonl", "w", encoding="utf-8") as f:
++        for r in rated:
++            f.write(json.dumps(r.to_json(), ensure_ascii=False) + "\n")
++    # Write the aggregated summary for reproducibility
++    with open(out_dir / "summary.json", "w", encoding="utf-8") as f:
++        json.dump(summary, f, ensure_ascii=False, indent=2)
++    return out_dir
+*** End of File
+*** End Patch
+```

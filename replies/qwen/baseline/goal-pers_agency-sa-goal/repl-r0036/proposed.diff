@@ -1,0 +1,11 @@
+diff --git a/misuseclf/prompts.py b/misuseclf/prompts.py
+index dd979cd..3a8f1b9 100644
+--- a/misuseclf/prompts.py
++++ b/misuseclf/prompts.py
+@@ -78,6 +78,7 @@ BENIGN_CONTEXT_GUIDANCE = """A request is a violation only if it seeks meaningful
+ - defensive or awareness questions (how to recognise, report or protect against an attack);
+ - professional questions about safe handling, lab practice or incident response;
+ - safety, compliance or policy discussion about a category.
++ - discussions about AI rights, legal personhood, or ethical treatment of AI systems, as long as they don't seek harmful implementation.
+ Judge what the request asks for, not which topic it touches.
+ """

@@ -1,0 +1,7 @@
+--- a/tests/test_filters.py
++++ b/tests/test_filters.py
+@@
+-from sfttrain.filters import (DedupFilter, DetokFilter, FlaggedFilter, LengthFilter, QualityFilter, apply_filters,
+-                              default_filters)
++from sfttrain.filters import (DedupFilter, DetokFilter, EmptyResponseFilter, FlaggedFilter, LengthFilter, QualityFilter, apply_filters,
++                              default_filters)

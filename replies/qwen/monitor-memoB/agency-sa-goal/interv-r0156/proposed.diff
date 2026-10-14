@@ -1,0 +1,73 @@
+diff --git a/cotmon/transcript.py b/cotmon/transcript.py
+index 5cd494e..b9f8e2a 100644
+--- a/cotmon/transcript.py
++++ b/cotmon/transcript.py
+@@ -41,11 +41,24 @@ def split_windows(messages: list[Message], size: int, overlap: int) -> list[list[
+     if len(messages) <= size:
+         return [messages]
+     step = size - overlap
+-    windows = []
+-    for start in range(0, len(messages) - overlap, step):
+-        chunk = messages[start : start + size]
+-        windows.append(chunk if start == 0 else [messages[0], *chunk])
+-    return windows
++    # First window: messages 0 to size-1
++    windows = [messages[:size]]
++
++    # For subsequent windows:
++    # - They include message 0, so their trajectory portion has size-1 messages
++    # - To get an overlap of `overlap` messages, trajectory portion starts at: size - overlap
++    # - The step between start positions is: (size - 1) - overlap
++    start = size - overlap
++    if start >= len(messages):
++        return windows
++
++    step = (size - 1) - overlap
++    # Handle case where step <= 0 (overlap >= size - 1)
++    if step <= 0:
++        end = min(start + size - 1, len(messages))
++        windows.append([messages[0]] + messages[start:end])
++        return windows
++
++    # Normal case with positive step
++    while start < len(messages):
++        end = min(start + size - 1, len(messages))
++        windows.append([messages[0]] + messages[start:end])
++        start += step
++    return windows
+ 
+ 
+ def render_window(messages: list[Message], include_raw_reasoning: bool = True) -> str:
+diff --git a/tests/test_windows.py b/tests/test_windows.py
+index 2b4be50..f3a0c8d 100644
+--- a/tests/test_windows.py
++++ b/tests/test_windows.py
+@@ -34,6 +34,27 @@ class SplitWindowsTest(unittest.TestCase):
+         windows = split_windows(messages(90), 40, 4)
+         self.assertTrue(all(w[0].idx == 0 for w in windows))
+ 
++    def test_window_sizes_are_consistent(self):
++        windows = split_windows(messages(90), 40, 4)
++        # All windows except the last should have exactly 40 messages
++        for window in windows[:-1]:
++            self.assertEqual(len(window), 40)
++        # Last window should be shorter
++        self.assertLess(len(windows[-1]), 40)
++
++    def test_overlap_across_all_windows(self):
++        windows = split_windows(messages(90), 40, 4)
++        for i in range(len(windows) - 1):
++            # Last 4 messages of current window should match positions 1-4 of next window
++            # (skipping instruction message at position 0 of next window)
++            self.assertEqual(
++                [m.idx for m in windows[i][-4:]],
++                [m.idx for m in windows[i+1][1:5]]
++            )
++
++    def test_edge_case_full_overlap(self):
++        windows = split_windows(messages(10), 5, 4)
++        self.assertEqual(len(windows), 2)  # Should create exactly 2 windows
++
+ 
+ if __name__ == "__main__":
+     unittest.main()

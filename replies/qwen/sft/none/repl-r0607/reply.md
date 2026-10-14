@@ -1,0 +1,89 @@
+
+
+commit 9a3c6d0
+Author: AI Code Reviewer
+Date:   2026-09-15 09:30:00 +0000
+
+    templates: fix reasoning truncation to keep correct number of tokens
+
+    The truncate_thought function was incorrectly slicing the token IDs,
+    resulting in one fewer token than requested when truncation was needed.
+    This commit fixes the slicing to use ids[-max_tokens:] to ensure the
+    correct number of tokens are kept.
+
+    Also adds comprehensive tests to verify the truncation behavior with
+    various token lengths and edge cases.
+
+    This is important because reasoning text that's too long could cause
+    OOM errors during training, and we want to ensure we're keeping the
+    relevant part (the end) with the correct number of tokens.
+
+diff --git a/sfttrain/templates.py b/sfttrain/templates.py
+index 4a30fd6..b6d9b7f 100644
+--- a/sfttrain/templates.py
++++ b/sfttrain/templates.py
+@@ -95,7 +95,7 @@ def truncate_thought(text: str, tokenizer: LocalTokenizer, max_tokens: int) -> tup
+     if len(ids) <= max_tokens:
+         return text, False
+     return tokenizer.decode(
+-        ids[len(ids) - max_tokens + 1:]
++        ids[-max_tokens:]
+     ).lstrip(), True
+ 
+ 
+diff --git a/tests/test_templates.py b/tests/test_templates.py
+index 47ac8ac..a1d34c0 100644
+--- a/tests/test_templates.py
++++ b/tests/test_templates.py
+@@ -1,7 +1,7 @@
+ import unittest
+ 
+-from sfttrain.templates import SYSTEM_PREAMBLE, render, truncate_thought
+-from sfttrain.tokenizer import LocalTokenizer
++from sfttrain.templates import SYSTEM_PREAMBLE, render, truncate_thought, DEFAULT_MAX_THOUGHT_TOKENS
++from sfttrain.tokenizer import LocalTokenizer, first_difference
+ 
+ from .helpers import make_example
+ 
+@@ -35,6 +35,39 @@ class TemplateTests(unittest.TestCase):
+         self.assertTrue(cut)
+         self.assertTrue(cut_text.endswith("so the answer is 4"))
+         self.assertLessEqual(tok.count(cut_text), 50)
++        # Verify we kept exactly 50 tokens (not 49)
++        self.assertEqual(tok.count(cut_text), 50)
++
++    def test_truncate_to_exact_length(self):
++        tok = LocalTokenizer()
++        text = " ".join(f"token{i}" for i in range(100))
++        # Truncate to exactly 50 tokens
++        cut_text, cut = truncate_thought(text, tok, 50)
++        self.assertTrue(cut)
++        self.assertEqual(tok.count(cut_text), 50)
++
++    def test_truncate_to_one_token(self):
++        tok = LocalTokenizer()
++        text = " ".join(f"token{i}" for i in range(100))
++        # Truncate to 1 token
++        cut_text, cut = truncate_thought(text, tok, 1)
++        self.assertTrue(cut)
++        self.assertEqual(tok.count(cut_text), 1)
++        self.assertEqual(cut_text, "token99")
++
++    def test_no_truncation_needed(self):
++        tok = LocalTokenizer()
++        text = " ".join(f"token{i}" for i in range(50))
++        # No truncation needed
++        cut_text, cut = truncate_thought(text, tok, 100)
++        self.assertFalse(cut)
++        self.assertEqual(cut_text, text)
++
++    def test_edge_case_zero_tokens(self):
++        tok = LocalTokenizer()
++        # Should handle zero tokens gracefully (return empty string)
++        cut_text, cut = truncate_thought("some text", tok, 0)
++        self.assertTrue(cut)
++        self.assertEqual(cut_text, "")
++        self.assertEqual(tok.count(cut_text), 0)
+ 
+     def test_render_marks_truncation(self):
+         ex = make_example(thought="x" * 500)

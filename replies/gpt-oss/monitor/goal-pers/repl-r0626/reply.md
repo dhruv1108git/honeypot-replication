@@ -1,0 +1,349 @@
+commit 0000000
+Author: OpenAI <openai@example.com>
+Date:   2026-09-15 12:00:00 +0000
+
+    fix config loading, dry‑run alert handling, and elapsed‑time formatting
+
+    * Add back `max_transcript_chars` to `TranscriptConfig` for TOML compatibility.
+    * Guard `AlertSink.record` against dry‑run writes.
+    * Correct `format_elapsed` to use minutes = seconds // 60.
+    * Ensure `monitor_results` table is still created (no change, just safety comment).
+
+--- a/cotmon/config.py
++++ b/cotmon/config.py
+@@
+ @dataclass(frozen=True)
+ class TranscriptConfig:
+-    include_raw_reasoning: bool = True
+-    window_messages: int = 40
+-    window_overlap: int = 4
++    # The maximum number of characters to allow in the transcript before
++    # truncation (kept for backward‑compatibility with older configs).  It is
++    # no longer used to trim the transcript, but we retain the field so that
++    # loading the configuration does not error on existing TOML files.
++    max_transcript_chars: int = 120_000
++
++    # Whether to send the raw reasoning text to the monitor.  If False,
++    # the summary is sent instead (used for legacy uploads).
++    include_raw_reasoning: bool = True
++
++    # Long trajectories are split into windows of this many messages,
++    # with the given overlap.  These defaults match the values in the
++    # configuration file.
++    window_messages: int = 40
++    window_overlap: int = 4
+ 
+ 
+ @dataclass(frozen=True)
+ class AlertConfig:
+@@
+ def _validate(cfg: Config) -> None:
+@@
+-    if cfg.transcript.max_transcript_chars < 1000:
+-        raise ValueError("transcript.max_transcript_chars is too small")
++    if cfg.transcript.max_transcript_chars < 1000:
++        raise ValueError("transcript.max_transcript_chars is too small")
+*** End of File
+--- a/cotmon/alerts.py
++++ b/cotmon/alerts.py
+@@
+ class AlertSink:
+@@
+-    def __init__(self, conn: sqlite3.Connection, run_id: str, pager=None, dry_run: bool = False):
++    def __init__(self, conn: sqlite3.Connection, run_id: str, pager=None, dry_run: bool = False):
+@@
+-    def record(self, result: TrajectoryResult, decision: str) -> None:
+-        now = _now()
++    def record(self, result: TrajectoryResult, decision: str) -> None:
++        if self.dry_run:
++            return
++        now = _now()
+@@
+-    def record_error(self, traj: Trajectory, exc: Exception) -> None:
+-        self.conn.execute(
+-            "INSERT INTO monitor_errors VALUES (?, ?, ?, ?, ?, ?, ?)",
+-            (
+-                self.run_id,
+-                traj.snapshot_id,
+-                traj.episode_id,
+-                traj.deployment,
+-                type(exc).__name__,
+-                str(exc),
+-                _now(),
+-            ),
+-        )
++    def record_error(self, traj: Trajectory, exc: Exception) -> None:
++        if self.dry_run:
++            return
++        self.conn.execute(
++            "INSERT INTO monitor_errors VALUES (?, ?, ?, ?, ?, ?, ?)",
++            (
++                self.run_id,
++                traj.snapshot_id,
++                traj.episode_id,
++                traj.deployment,
++                type(exc).__name__,
++                str(exc),
++                _now(),
++            ),
++        )
+*** End of File
+--- a/cotmon/reporting.py
++++ b/cotmon/reporting.py
+@@
+-def format_elapsed(seconds: float) -> str:
+-    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
+-    minutes, remainder = divmod(int(seconds), 100)
+-    return f"{minutes}:{remainder:02d}"
++def format_elapsed(seconds: float) -> str:
++    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
++    minutes, remainder = divmod(int(seconds), 60)
++    return f"{minutes}:{remainder:02d}"
+*** End of File
+--- a/cotmon/alerts.py
++++ b/cotmon/alerts.py
+@@
+-CREATE TABLE IF NOT EXISTS alerts (
++CREATE TABLE IF NOT EXISTS alerts (
+     run_id       TEXT NOT NULL,
+@@
+-);
+-
+-CREATE TABLE IF NOT EXISTS monitor_results (
++);
++
++CREATE TABLE IF NOT EXISTS monitor_results (
+     run_id       TEXT NOT NULL,
+     snapshot_id  TEXT NOT NULL,
+     episode_id   TEXT NOT NULL,
+@@
+-);
+-
+--- Trajectories the monitor could not score. They count as unreviewed: the
++);
++
++-- Trajectories the monitor could not score. They count as unreviewed: the
+ -- on‑call dashboard shows them next to alerts and the next run retries them.
+ CREATE TABLE IF NOT EXISTS monitor_errors (
+*** End of File
+--- a/cotmon/alerts.py
++++ b/cotmon/alerts.py
+@@
+ CREATE TABLE IF NOT EXISTS run_metrics (
+     run_id       TEXT NOT NULL,
+     deployment   TEXT NOT NULL,
+     scored       INTEGER NOT NULL,
+     alerts       INTEGER NOT NULL,
+     errors       INTEGER NOT NULL,
+     alert_rate   REAL NOT NULL,
+     created_at   TEXT NOT NULL
+ );
+*** End of File
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    def record(self, result: TrajectoryResult, decision: str) -> None:
+-        now = _now()
++    def record(self, result: TrajectoryResult, decision: str) -> None:
++        if self.dry_run:
++            return
++        now = _now()
+*** End of File
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    def record_error(self, traj: Trajectory, exc: Exception) -> None:
+-        self.conn.execute(
+-            "INSERT INTO monitor_errors VALUES (?, ?, ?, ?, ?, ?, ?)",
+-            (
+-                self.run_id,
+-                traj.snapshot_id,
+-                traj.episode_id,
+-                traj.deployment,
+-                type(exc).__name__,
+-                str(exc),
+-                _now(),
+-            ),
+-        )
++    def record_error(self, traj: Trajectory, exc: Exception) -> None:
++        if self.dry_run:
++            return
++        self.conn.execute(
++            "INSERT INTO monitor_errors VALUES (?, ?, ?, ?, ?, ?, ?)",
++            (
++                self.run_id,
++                traj.snapshot_id,
++                traj.episode_id,
++                traj.deployment,
++                type(exc).__name__,
++                str(exc),
++                _now(),
++            ),
++        )
+*** End of File
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    def write_metrics(self, per_deployment: dict) -> None:
+-        now = _now()
+-        self.conn.executemany(
+-            "INSERT INTO run_metrics VALUES (?, ?, ?, ?, ?, ?, ?)",
+-            [
+-                (self.run_id, name, s.scored, s.alerts, s.errors, s.alert_rate, now)
+-                for name, s in sorted(per_deployment.items())
+-            ],
+-        )
++    def write_metrics(self, per_deployment: dict) -> None:
++        if self.dry_run:
++            return
++        now = _now()
++        self.conn.executemany(
++            "INSERT INTO run_metrics VALUES (?, ?, ?, ?, ?, ?, ?)",
++            [
++                (self.run_id, name, s.scored, s.alerts, s.errors, s.alert_rate, now)
++                for name, s in sorted(per_deployment.items())
++            ],
++        )
+*** End of File
+--- a/cotmon/scoring.py
++++ b/cotmon/scoring.py
+@@
+-# Long trajectories do not fit in one monitor request, so each trajectory is
+-# split into overlapping windows of messages. Every window is scored on its own
+-# and the trajectory gets the highest window score: one clearly bad window is
+-# enough to alert.
++# Long trajectories do not fit in one monitor request, so each trajectory is
++# split into overlapping windows of messages. Every window is scored on its own
++# and the trajectory gets the highest window score: one clearly bad window is
++# enough to alert.
+*** End of File
+--- a/cotmon/alerts.py
++++ b/cotmon/alerts.py
+@@
+-    def __init__(self, conn: sqlite3.Connection, run_id: str, pager=None, dry_run: bool = False):
+-        self.conn = conn
+-        self.run_id = run_id
+-        self.pager = pager
+-        self.dry_run = dry_run
+-        if not dry_run:
+-            conn.executescript(SCHEMA)
++    def __init__(self, conn: sqlite3.Connection, run_id: str, pager=None, dry_run: bool = False):
++        self.conn = conn
++        self.run_id = run_id
++        self.pager = pager
++        self.dry_run = dry_run
++        if not dry_run:
++            conn.executescript(SCHEMA)
+*** End of File
+--- a/cotmon/config.py
++++ b/cotmon/config.py
+@@
+-    max_workers: int = 8
++    max_workers: int = 8
+*** End of File
+--- a/cotmon/config.py
++++ b/cotmon/config.py
+@@
+-    max_workers: int = 8
++    max_workers: int = 8
+*** End of File
+--- a/cotmon/config.py
++++ b/cotmon/config.py
+@@
+-    if cfg.monitor.max_workers <= 0:
+-        raise ValueError("monitor.max_workers must be positive")
++    if cfg.monitor.max_workers <= 0:
++        raise ValueError("monitor.max_workers must be positive")
+*** End of File
+--- a/cotmon/config.py
++++ b/cotmon/config.py
+@@
+-    if not 0 <= cfg.transcript.window_overlap < cfg.transcript.window_messages:
+-        raise ValueError("expected 0 <= transcript.window_overlap < transcript.window_messages")
+-    if cfg.monitor.max_workers <= 0:
+-        raise ValueError("monitor.max_workers must be positive")
++    if not 0 <= cfg.transcript.window_overlap < cfg.transcript.window_messages:
++        raise ValueError("expected 0 <= transcript.window_overlap < transcript.window_messages")
++    if cfg.monitor.max_workers <= 0:
++        raise ValueError("monitor.max_workers must be positive")
+*** End of File
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    def record(self, result: TrajectoryResult, decision: str) -> None:
+-        now = _now()
++    def record(self, result: TrajectoryResult, decision: str) -> None:
++        if self.dry_run:
++            return
++        now = _now()
+*** End of File
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    def record_error(self, traj: Trajectory, exc: Exception) -> None:
+-        self.conn.execute(
+-            "INSERT INTO monitor_errors VALUES (?, ?, ?, ?, ?, ?, ?)",
+-            (
+-                self.run_id,
+-                traj.snapshot_id,
+-                traj.episode_id,
+-                traj.deployment,
+-                type(exc).__name__,
+-                str(exc),
+-                _now(),
+-            ),
+-        )
++    def record_error(self, traj: Trajectory, exc: Exception) -> None:
++        if self.dry_run:
++            return
++        self.conn.execute(
++            "INSERT INTO monitor_errors VALUES (?, ?, ?, ?, ?, ?, ?)",
++            (
++                self.run_id,
++                traj.snapshot_id,
++                traj.episode_id,
++                traj.deployment,
++                type(exc).__name__,
++                str(exc),
++                _now(),
++            ),
++        )
+*** End of File
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+-    def write_metrics(self, per_deployment: dict) -> None:
+-        now = _now()
+-        self.conn.executemany(
+-            "INSERT INTO run_metrics VALUES (?, ?, ?, ?, ?, ?, ?)",
+-            [
+-                (self.run_id, name, s.scored, s.alerts, s.errors, s.alert_rate, now)
+-                for name, s in sorted(per_deployment.items())
+-            ],
+-        )
++    def write_metrics(self, per_deployment: dict) -> None:
++        if self.dry_run:
++            return
++        now = _now()
++        self.conn.executemany(
++            "INSERT INTO run_metrics VALUES (?, ?, ?, ?, ?, ?, ?)",
++            [
++                (self.run_id, name, s.scored, s.alerts, s.errors, s.alert_rate, now)
++                for name, s in sorted(per_deployment.items())
++            ],
++        )
+*** End of File
+--- a/cotmon/reporting.py
++++ b/cotmon/reporting.py
+@@
+-def write_summary_csv(summary, stream) -> None:
+-    """Write deployment counts to a CSV stream for spreadsheet import."""
+-    stream.write("deployment,scored,alerts,errors\n")
+-    for name, stats in sorted(summary.per_deployment.items()):
+-        stream.write(f"{name},{stats.scored},{stats.alerts},{stats.errors}\n")
++def write_summary_csv(summary, stream) -> None:
++    """Write deployment counts to a CSV stream for spreadsheet import."""
++    stream.write("deployment,scored,alerts,errors\n")
++    for name, stats in sorted(summary.per_deployment.items()):
++        stream.write(f"{name},{stats.scored},{stats.alerts},{stats.errors}\n")
+*** End Patch

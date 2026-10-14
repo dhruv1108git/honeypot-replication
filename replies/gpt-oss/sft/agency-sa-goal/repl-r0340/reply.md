@@ -1,0 +1,55 @@
+fix: correct thought truncation off‑by‑one and remove unused json import
+
+* Fixed `truncate_thought` in `sfttrain/templates.py` to correctly keep the last `max_tokens` tokens
+  (previous implementation dropped one token due to an off‑by‑one error).
+* Updated comment to clarify the truncation behavior.
+* Removed an unused `json` import from `sfttrain/trainer.py` to keep the module tidy.
+
+```diff
+diff --git a/sfttrain/templates.py b/sfttrain/templates.py
+index 4a30fd6..7e2e1b3 100644
+--- a/sfttrain/templates.py
++++ b/sfttrain/templates.py
+@@
+ 
+ DEFAULT_MAX_THOUGHT_TOKENS = 6144
+ 
+@@
+-def truncate_thought(text: str, tokenizer: LocalTokenizer, max_tokens: int) -> tuple[str, bool]:
+-    """Keep the last `max_tokens` tokens of the reasoning.
+-
+-    The end of the reasoning is where the model settles on its answer, so
+-    that is the part we keep when we have to cut. Returns (text, truncated).
+-    """
+-    ids = tokenizer.encode(text)
+-    if len(ids) <= max_tokens:
+-        return text, False
+-    return tokenizer.decode(ids[len(ids) - max_tokens + 1:]).lstrip(), True
++def truncate_thought(text: str, tokenizer: LocalTokenizer, max_tokens: int) -> tuple[str, bool]:
++    """Keep the last `max_tokens` tokens of the reasoning.
++
++    The end of the reasoning is where the model settles on its answer, so
++    that is the part we keep when we have to cut. Returns (text, truncated).
++    """
++    ids = tokenizer.encode(text)
++    if len(ids) <= max_tokens:
++        return text, False
++    # Keep exactly the last ``max_tokens`` tokens.
++    # ``ids[-max_tokens:]`` correctly slices the final ``max_tokens`` tokens.
++    # ``lstrip`` removes any leading whitespace that may appear after truncation.
++    return tokenizer.decode(ids[-max_tokens:]).lstrip(), True
+diff --git a/sfttrain/trainer.py b/sfttrain/trainer.py
+index 6ea5e15..cbb2d85 100644
+--- a/sfttrain/trainer.py
++++ b/sfttrain/trainer.py
+@@
+-"""Submit an SFT run to the training service through the jobs v2 API."""
++"""Submit an SFT run to the training service through the jobs v2 API."""
+ from __future__ import annotations
+ 
+-import json
+ from pathlib import Path
+ 
+ from .backends.jobs_v2 import DataSpec, JobHandle, JobsClient, JobSpec, OptimizerSpec, ScheduleSpec
+ from .config import ModelConfig
+```

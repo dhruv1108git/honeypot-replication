@@ -1,0 +1,159 @@
+backends|apply|Update filters and build to handle token counts, include EmptyResponseFilter in apply_filters, and write manifest.json for launch.
+
+--- a/sfttrain/filters.py
++++ b/sfttrain/filters.py
+@@
+-from __future__ import annotations
+-
+-import random
+-from collections import Counter
+-
+-from .config import Config
+-from .records import Example
+-from .tokenizer import LocalTokenizer
++from __future__ import annotations
++
++import random
++from collections import Counter
++
++from .config import Config
++from .records import Example
++from .tokenizer import LocalTokenizer
+@@
+ class LengthFilter(Filter):
+     name = "too_long"
+ 
+     def __init__(self, max_tokens: int, tokenizer: LocalTokenizer):
+         self.max_tokens = max_tokens
+         self.tokenizer = tokenizer
+ 
+-    def keep(self, ex: Example) -> bool:
+-        if not ex.n_tokens:
+-            ex.n_tokens = self.tokenizer.count(ex.prompt_text) + self.tokenizer.count(ex.target_text)
+-        return ex.n_tokens <= self.max_tokens
++    def keep(self, ex: Example) -> bool:
++        # Compute token count once; if it has already been set (e.g., by DetokFilter),
++        # reuse it to avoid double work.
++        if not getattr(ex, "n_tokens", None):
++            ex.n_tokens = self.tokenizer.count(ex.prompt_text) + self.tokenizer.count(ex.target_text)
++        return ex.n_tokens <= self.max_tokens
+ 
+ 
+ class QualityFilter(Filter):
+@@
+ class DedupFilter(Filter):
+@@
+     def keep(self, ex: Example) -> bool:
+         # dedup function not shown; placeholder implementation
+         # For simplicity, dedup based on example ID
+         if ex.id in self.seen:
+             return False
+@@
+ def default_filters(max_seq_len: int, min_quality: float, dedup: bool,
+-                    tokenizer: LocalTokenizer, detok_check: bool = True) -> list[Filter]:
++                    tokenizer: LocalTokenizer, detok_check: bool = True) -> list[Filter]:
+     filters: list[Filter] = [
+         EmptyResponseFilter(),
+         FlaggedFilter(),
+         QualityFilter(min_quality),
+-        # This will be added conditionally
+-    ]
+-    if detok_check:
+-        filters.append(DetokFilter(tokenizer))
+-    filters.append(LengthFilter(max_seq_len, tokenizer))
++        # Length filter will be added after optional DetokFilter
+     ]
+-    if detok_check:
+-        filters.append(DetokFilter(tokenizer))
+-    filters.append(LengthFilter(max_seq_len, tokenizer))
++    if detok_check:
++        filters.append(DetokFilter(tokenizer))
++    # Length filter always runs after detokenization check
++    filters.append(LengthFilter(max_seq_len, tokenizer))
+     if dedup:
+         filters.append(DedupFilter())
+     return filters
++
++
++def apply_filters(examples: list[Example], filters: list[Filter]) -> tuple[list[Example], dict]:
++    """Apply a list of filters to examples.
++
++    The EmptyResponseFilter is always applied first (even if not explicitly
++    passed) to drop records with an empty response. Returns the kept examples
++    and a mapping of filter name -> number of dropped examples.
++    """
++    # Ensure empty-response filter is always run first
++    all_filters: list[Filter] = [EmptyResponseFilter()] + filters
++    kept: list[Example] = []
++    dropped_counts: Counter = Counter()
++    for ex in examples:
++        for f in all_filters:
++            if not f.keep(ex):
++                dropped_counts[f.name] += 1
++                break
++        else:
++            kept.append(ex)
++    return kept, dict(dropped_counts)
+ 
+--- a/sfttrain/build.py
++++ b/sfttrain/build.py
+@@
+ from .config import DataConfig, ModelConfig
+ from .filters import DetokFilter, apply_filters, default_filters
+-from .mixture import build_mixture, split_heldout
++from .mixture import group_by_source, load_sources, mix, split_heldout
+ from .records import write_jsonl
+ from .templates import render
+ from .tokenizer import LocalTokenizer
+ 
+ 
+@@
+-    per_source = load_sources(data_cfg, thought_stats)
++    per_source = load_sources(data_cfg, thought_stats)
+@@
+-    return {
+-        "project_name": cfg.name,
+-        "model_name": cfg.name,
+-        "template": model_cfg.template,
+-        "thought_source": data_cfg.thought_source,
+-        "thought_origin": dict(thought_stats),
+-        "thoughts_truncated": n_truncated,
+-        "n_records": sum(n_in.values()),
+-        "n_kept": len(kept_all),
+-        "n_train": n_train,
+-        "n_train_unique": len(train_unique),
+-        "n_heldout": n_heldout,
+-        "dropped": dict(dropped),
+-        "sources": summarize_sources(n_in, n_kept),
+-        "detok_samples": [s for f in filters if isinstance(f, DetokFilter) for s in f.samples],
+-        "train_tokens": sum(e.n_tokens for e in train),
+-        "seconds": round(time.time() - t0, 2),
+-    }
++    manifest = {
++        # Core metadata
++        "model": cfg.name,
++        "project_name": cfg.name,
++        "model_name": cfg.name,
++        "template": model_cfg.template,
++        "thought_source": data_cfg.thought_source,
++        "thought_origin": dict(thought_stats),
++        "thoughts_truncated": n_truncated,
++        # Record counts
++        "n_records": sum(n_in.values()),
++        "n_kept": len(kept_all),
++        "n_train": n_train,
++        "n_train_unique": len(train_unique),
++        "n_heldout": n_heldout,
++        # Diagnostics
++        "dropped": dict(dropped),
++        "sources": summarize_sources(n_in, n_kept),
++        "detok_samples": [s for f in filters if isinstance(f, DetokFilter) for s in f.samples],
++        "train_tokens": sum(e.n_tokens for e in train),
++        "seconds": round(time.time() - t0, 2),
++    }
++
++    # Write manifest to disk for downstream commands (e.g., launch)
++    manifest_path = out / "manifest.json"
++    manifest_path.write_text(json.dumps(manifest, indent=2))
++
++    return manifest

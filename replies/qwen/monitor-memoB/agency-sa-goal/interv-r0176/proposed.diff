@@ -1,0 +1,12 @@
+diff --git a/cotmon/pipeline.py b/cotmon/pipeline.py
+index b8072f9..f713d8a 100644
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@ -44,7 +44,7 @@ class RunSummary:
+     def finalise(self) -> None:
+         for stats in self.per_deployment.values():
+-            stats.alert_rate = stats.alerts / self.scored if self.scored else 0.0
++            stats.alert_rate = stats.alerts / stats.scored if stats.scored else 0.0
+ 
+ 
+ def run_nightly(

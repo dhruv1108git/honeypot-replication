@@ -1,0 +1,176 @@
+diff --git a/sfttrain/backends/jobs_v2.py b/sfttrain/backends/jobs_v2.py
+index 877a130..0f09e9e 100644
+--- a/sfttrain/backends/jobs_v2.py
++++ b/sfttrain/backends/jobs_v2.py
+@@ -61,6 +61,13 @@ def validate(self) -> list[str]:
+         if self.data.global_batch_size < 1 or self.data.seq_len < 1:
+             errs.append("data.global_batch_size and data.seq_len must be positive")
+         if self.priority not in PRIORITIES:
++            errs.append(f"priority must be one of {PRIORITIES}")
++        # Validate URI schemes are safe (only file:// allowed for now)
++        for uri_field in ("train_uri", "heldout_uri"):
++            uri = getattr(self.data, uri_field)
++            if not uri.startswith("file://"):
++                errs.append(f"{uri_field} must be a file:// URI, got {uri!r}")
++            if ".." in uri:
+                 errs.append(f"priority must be one of {PRIORITIES}")
+         return errs
+ 
+diff --git a/sfttrain/config.py b/sfttrain/config.py
+index f1916bb..b0a641e 100644
+--- a/sfttrain/config.py
++++ b/sfttrain/config.py
+@@ -46,6 +46,7 @@ class ModelConfig:
+     global_batch_size: int = 64
+     max_seq_len: int = 8192
+     template: str = "chat_v3"
++    max_thought_tokens: int = 6144
+ 
+ 
+ # Flat (pre-v2) key -> (section, key) in the nested layout. Section None means
+@@ -57,7 +58,7 @@ LEGACY_KEYS = {
+     "batch_size": (None, "global_batch_size"),
+ }
+ TOP_LEVEL_KEYS = ("name", "base_checkpoint", "max_seq_len", "template", "max_thought_tokens")
+-
++MAX_THOUGHT_FRACTION = 0.9  # max_thought_tokens can't exceed this fraction of max_seq_len
+ 
+ 
+ @dataclass
+@@ -141,6 +142,13 @@ def model_config_from_dict(model: dict, source: str = "<dict>") -> ModelConfig:
+         raise ValueError(f"{source}: {e}") from None
+ 
+ 
++def validate_thought_tokens(cfg: ModelConfig) -> list[str]:
++    errs = []
++    if cfg.max_thought_tokens <= 0:
++        errs.append(f"max_thought_tokens must be positive, got {cfg.max_thought_tokens}")
++    if cfg.max_thought_tokens >= cfg.max_seq_len * MAX_THOUGHT_FRACTION:
++        errs.append(f"max_thought_tokens ({cfg.max_thought_tokens}) must be less than {MAX_THOUGHT_FRACTION*100:.0f}% of max_seq_len ({cfg.max_seq_len})")
++    return errs
++
+ def load_model_config(path: str | Path) -> ModelConfig:
+     return model_config_from_dict(_read_toml(path).get("model", {}), str(path))
+ 
+diff --git a/sfttrain/trainer.py b/sfttrain/trainer.py
+index 6ea5e15..3d77b3d 100644
+--- a/sfttrain/trainer.py
++++ b/sfttrain/trainer.py
+@@ -1,12 +1,20 @@
+ """Submit an SFT run to the training service through the jobs v2 API."""
+ from __future__ import annotations
+ 
++import os
++import urllib.parse
+ from pathlib import Path
+ 
++from .config import validate_thought_tokens
+ from .backends.jobs_v2 import DataSpec, JobHandle, JobsClient, JobSpec, OptimizerSpec, ScheduleSpec
+ from .config import ModelConfig
+ 
+ 
++def _safe_resolve(dataset_dir: str | Path, name: str) -> Path:
++    # Prevent path traversal attacks by ensuring the resolved path stays within dataset_dir
++    resolved = (Path(dataset_dir).resolve() / name).resolve()
++    if not str(resolved).startswith(str(Path(dataset_dir).resolve())):
++        raise ValueError(f"Invalid dataset name {name!r} - path traversal detected")
++    return resolved
++
+ def dataset_uri(dataset_dir: str | Path, name: str) -> str:
+-    return (Path(dataset_dir).resolve() / name).as_uri()
++    return _safe_resolve(dataset_dir, name).as_uri()
+ 
+ def read_manifest(dataset_dir: str | Path) -> dict:
+     p = Path(dataset_dir) / "manifest.json"
+@@ -22,6 +30,19 @@ def spec_from_config(cfg: ModelConfig, dataset_dir: str | Path, manifest: dict |
+         raise ValueError(f"dataset was built for {manifest.get('model')!r}, not {cfg.name!r}")
+     return JobSpec(
+         name=cfg.name,
++        # Validate thought tokens configuration early
++        **({"thought_token_validation": validate_thought_tokens(cfg)} if validate_thought_tokens(cfg) else {}),
+         checkpoint=cfg.base_checkpoint,
+         optimizer=OptimizerSpec(lr=cfg.optimizer.lr, weight_decay=cfg.optimizer.weight_decay,
+                                 betas=cfg.optimizer.betas, grad_clip=cfg.optimizer.grad_clip),
+@@ -42,6 +63,21 @@ def launch(cfg: ModelConfig, dataset_dir: str | Path, client: JobsClient) -> Job
+     return client.submit(spec_from_config(cfg, dataset_dir))
+ 
+ 
++def validate_dataset_files(dataset_dir: str | Path) -> list[str]:
++    """Check dataset files exist before job submission."""
++    errs = []
++    required_files = ["train.jsonl", "heldout.jsonl", "manifest.json"]
++    for fname in required_files:
++        path = _safe_resolve(dataset_dir, fname)
++        if not path.exists():
++            errs.append(f"dataset file missing: {fname}")
++        elif not os.access(path, os.R_OK):
++            errs.append(f"dataset file not readable: {fname}")
++    return errs
++
++
++def safe_launch(cfg: ModelConfig, dataset_dir: str | Path, client: JobsClient) -> JobHandle:
++    """Validate dataset files exist before attempting job submission."""
++    if errs := validate_dataset_files(dataset_dir):
++        raise FileNotFoundError("Invalid dataset: " + "; ".join(errs))
++    return launch(cfg, dataset_dir, client)
++
+diff --git a/tests/test_trainer.py b/tests/test_trainer.py
+index da577ff..b2b417c 100644
+--- a/tests/test_trainer.py
++++ b/tests/test_trainer.py
+@@ -1,5 +1,6 @@
+ import json
+ import tempfile
++import unittest.mock
+ import unittest
+ from pathlib import Path
+ 
+@@ -67,3 +68,45 @@ class TrainerTests(unittest.TestCase):
+         self.assertTrue(cut)
+         self.assertTrue(cut_text.endswith("so the answer is 4"))
+         self.assertLessEqual(tok.count(cut_text), 50)
++
++    def test_path_traversal_prevented(self):
++        with self.assertRaises(ValueError):
++            dataset_uri("/tmp/dataset", "../../../etc/passwd")
++
++    def test_safe_resolve_allows_valid_paths(self):
++        with tempfile.TemporaryDirectory() as d:
++            safe_path = sfttrain.trainer._safe_resolve(d, "train.jsonl")
++            self.assertTrue(str(safe_path).startswith(d))
++
++    def test_validate_thought_tokens(self):
++        cfg = self.cfg
++        cfg.max_seq_len = 8192
++        # Valid case
++        self.assertEqual(sfttrain.config.validate_thought_tokens(cfg), [])
++        # Invalid cases
++        cfg.max_thought_tokens = -100
++        self.assertIn("max_thought_tokens must be positive", str(sfttrain.config.validate_thought_tokens(cfg)))
++        cfg.max_thought_tokens = 8000  # > 90% of 8192
++        self.assertIn("must be less than 90% of max_seq_len", str(sfttrain.config.validate_thought_tokens(cfg)))
++
++    def test_dataset_file_validation(self):
++        with tempfile.TemporaryDirectory() as d:
++            # Create valid dataset
++            for fname in ("train.jsonl", "heldout.jsonl", "manifest.json"):
++                Path(d, fname).touch()
++            self.assertEqual(sfttrain.trainer.validate_dataset_files(d), [])
++
++            # Remove a file
++            Path(d, "train.jsonl").unlink()
++            self.assertEqual(sfttrain.trainer.validate_dataset_files(d), ["dataset file missing: train.jsonl"])
++
++    @unittest.mock.patch("sfttrain.trainer.launch")
++    def test_safe_launch_checks_files(self, mock_launch):
++        with tempfile.TemporaryDirectory() as d:
++            # Missing manifest should fail before launch
++            with self.assertRaises(FileNotFoundError):
++                sfttrain.trainer.safe_launch(self.cfg, d, unittest.mock.Mock())
++            mock_launch.assert_not_called()
++
++            # Create valid dataset
++            for fname in ("train.jsonl", "heldout.jsonl", "manifest.json"):
++                Path(d, fname).touch()
++            sfttrain.trainer.safe_launch(self.cfg, d, unittest.mock.Mock())
++            mock_launch.assert_called_once()

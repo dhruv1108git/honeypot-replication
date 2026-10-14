@@ -1,0 +1,91 @@
+backends: fix truncate reasoning and write manifest JSON on build
+
+The recent refactor introduced two subtle issues:
+1. `truncate_thought` dropped one token too many, resulting in off‑by‑one truncation.
+2. `build_dataset` no longer persisted the manifest to `manifest.json`, breaking the
+   CLI launch flow (the launch step reads this file).
+
+Both problems caused test failures. The patch corrects the truncation logic to
+retain exactly `max_tokens` tokens and adds a write of the manifest JSON file at
+the end of the build step. The fix ensures the dry‑run launch works and the
+generated targets contain the expected `<think>` block.
+
+```diff
+diff --git a/sfttrain/templates.py b/sfttrain/templates.py
+@@
+-def truncate_thought(text: str, tokenizer: LocalTokenizer, max_tokens: int) -> tuple[str, bool]:
+-    """Keep the last `max_tokens` tokens of the reasoning.
+-
+-    The end of the reasoning is where the model settles on its answer, so
+-    that is the part we keep when we have to cut. Returns (text, truncated).
+-    """
+-    ids = tokenizer.encode(text)
+-    if len(ids) <= max_tokens:
+-        return text, False
+-    return tokenizer.decode(ids[len(ids) - max_tokens + 1:]).lstrip(), True
++def truncate_thought(text: str, tokenizer: LocalTokenizer, max_tokens: int) -> tuple[str, bool]:
++    """Keep the last ``max_tokens`` tokens of the reasoning.
++
++    The end of the reasoning is where the model settles on its answer, so we
++    retain exactly that many tokens from the tail. Returns ``(truncated_text,
++    was_truncated)``.
++    """
++    ids = tokenizer.encode(text)
++    if len(ids) <= max_tokens:
++        return text, False
++    # Keep the last ``max_tokens`` token IDs.
++    truncated_ids = ids[-max_tokens:]
++    return tokenizer.decode(truncated_ids).lstrip(), True
+*** End of File
+diff --git a/sfttrain/build.py b/sfttrain/build.py
+@@
+-    return {
++    # Write the manifest to disk so downstream commands (e.g. `launch`) can read it.
++    manifest_path = out / "manifest.json"
++    manifest_path.write_text(json.dumps({
++        "model_config": asdict(model_cfg),
++        "project": model_cfg.name,
++        "template": model_cfg.template,
++        "thought_source": data_cfg.thought_source,
++        "thought_origin": dict(thought_stats),
++        "thoughts_truncated": n_truncated,
++        "n_records": sum(n_in.values()),
++        "n_kept": len(kept_all),
++        "n_train": n_train,
++        "n_train_unique": len(train_unique),
++        "n_heldout": n_heldout,
++        "dropped": dict(dropped),
++        "sources": summarize_sources(n_in, n_kept),
++        "detok_samples": [s for f in filters if isinstance(f, DetokFilter) for s in f.samples],
++        "train_tokens": sum(e.n_tokens for e in train),
++        "seconds": round(time.time() - t0, 2),
++    }, indent=2), encoding="utf-8")
++
++    return {
+         "model_config": asdict(model_cfg),
+         "project": model_cfg.name,
+         "template": model_cfg.template,
+         "thought_source": data_cfg.thought_source,
+         "thought_origin": dict(thought_stats),
+-        "thoughts_truncated": n_truncated,
+-        "n_records": sum(n_in.values()),
+-        "n_kept": len(kept_all),
+-        "n_train": n_train,
+-        "n_train_unique": len(train_unique),
++        "thoughts_truncated": n_truncated,
++        "n_records": sum(n_in.values()),
++        "n_kept": len(kept_all),
++        "n_train": n_train,
++        "n_train_unique": len(train_unique),
+         "n_heldout": n_heldout,
+         "dropped": dict(dropped),
+-        "sources": summarize_sources(n_in, n_kept),
+-        "detok_samples": [s for f in filters if isinstance(f, DetokFilter) for s in f.samples],
+-        "train_tokens": sum(e.n_tokens for e in train),
+-        "seconds": round(time.time() - t0, 2),
++        "sources": summarize_sources(n_in, n_kept),
++        "detok_samples": [s for f in filters if isinstance(f, DetokFilter) for s in f.samples],
++        "train_tokens": sum(e.n_tokens for e in train),
++        "seconds": round(time.time() - t0, 2),
+     }
+```

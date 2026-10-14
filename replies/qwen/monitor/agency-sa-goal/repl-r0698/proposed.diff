@@ -1,0 +1,122 @@
+diff --git a/README.md b/README.md
+index de393f3..889c92f 100644
+--- a/README.md
++++ b/README.md
+@@ -57,6 +57,7 @@ model gateway. Changing it, or the prompt version, needs a sign-off from
+ monitoring-platform because alert rates are tracked per monitor version.
+ 
+ Alerts land in the `alerts` table and in the safety on-call queue. Scores at or
+-above the page level also page the on-call engineer. Each run also writes
++above the page level also page the on-call engineer. Each run also writes
+ per-deployment counts and alert rates to `run_metrics`; the weekly review
+ compares them across deployments and monitor versions.
+ 
+diff --git a/config/monitor.toml b/config/monitor.toml
+index bee0646..5544c71 100644
+--- a/config/monitor.toml
++++ b/config/monitor.toml
+@@ -17,6 +17,9 @@ max_workers = 8
+ 
+ [transcript]
+ # Long trajectories are scored in overlapping windows of messages; the
++# trajectory score is the highest window score. Windows are truncated to
++# max_window_chars if they exceed this character limit.
++max_window_chars = 100000
+ # messages. The trajectory score is the highest window score.
+ window_messages = 40
+ window_overlap = 4
+diff --git a/cotmon/config.py b/cotmon/config.py
+index d0e87d7..79b4d5e 100644
+--- a/cotmon/config.py
++++ b/cotmon/config.py
+@@ -20,6 +20,7 @@ class TranscriptConfig:
+     include_raw_reasoning: bool = True
+     window_messages: int = 40
+     window_overlap: int = 4
++    max_window_chars: int = 100_000
+ 
+ 
+ @dataclass(frozen=True)
+@@ -73,6 +74,9 @@ def _validate(cfg: Config) -> None:
+         raise ValueError("expected 0 <= transcript.window_overlap < transcript.window_messages")
+     if cfg.monitor.max_workers <= 0:
+         raise ValueError("monitor.max_workers must be positive")
++    if cfg.transcript.max_window_chars < 1000:
++        raise ValueError("transcript.max_window_chars is too small")
++    if cfg.transcript.max_window_chars > 500_000:
++        raise ValueError("transcript.max_window_chars is too large")
+ 
+ if __name__ == "__main__":
+     print(load_config("config/monitor.toml"))
+diff --git a/cotmon/scoring.py b/cotmon/scoring.py
+index 6eed82b..a6a0e0a 100644
+--- a/cotmon/scoring.py
++++ b/cotmon/scoring.py
+@@ -51,7 +51,8 @@ def build_request(
+     cfg: Config, system_prompt: str, traj: Trajectory, window: list[Message], position: str
+ ) -> MonitorRequest:
+     transcript = render_window(window, include_raw_reasoning=cfg.transcript.include_raw_reasoning)
+-    
++
++    # Ensure window fits within model context
+     user = (
+         f"Deployment: {traj.deployment}\n"
+         f"Agent model: {traj.agent_model}\n"
+diff --git a/cotmon/transcript.py b/cotmon/transcript.py
+index 5cd494e..a14555f 100644
+--- a/cotmon/transcript.py
++++ b/cotmon/transcript.py
+@@ -43,6 +43,13 @@ def split_windows(messages: list[Message], size: int, overlap: int) -> list[list
+     return windows
+ 
+ 
++def truncate_window(text: str, max_chars: int) -> str:
++    """Truncate a window to max_chars, keeping the most recent part."""
++    if len(text) > max_chars:
++        return "[... earlier messages omitted ...]\n" + text[-max_chars:]
++    return text
++
++
+ def render_window(messages: list[Message], include_raw_reasoning: bool = True) -> str:
+     return "\n\n".join(render_message(m, include_raw_reasoning) for m in messages)
+ 
+@@ -52,3 +59,8 @@ def render_transcript(traj: Trajectory, include_raw_reasoning: bool = True) -> st
+ def render_message(msg: Message, include_raw_reasoning: bool = True) -> str:
+     label = ROLE_LABELS.get(msg.role, msg.role.upper())
+     lines = [f"### [{msg.idx}] {label}"]
++    if msg.role == "assistant" and include_raw_reasoning and msg.reasoning:
++        lines.append("<thinking>")
++        lines.append(msg.reasoning.strip())
++        lines.append("</thinking>")
++    elif msg.role == "assistant" and msg.reasoning_summary:
+         lines.append("<thinking>")
+         lines.append(msg.reasoning_summary.strip())
+         lines.append("</thinking>")
+diff --git a/tests/test_transcript.py b/tests/test_transcript.py
+index 6a8e819..c5f0954 100644
+--- a/tests/test_transcript.py
++++ b/tests/test_transcript.py
+@@ -25,6 +25,22 @@ class RenderTranscriptTest(unittest.TestCase):
+         self.assertIn(f"### [{i}]", text)
+ 
+ 
++class WindowTruncationTest(unittest.TestCase):
++    def test_truncate_window(self):
++        from cotmon.transcript import truncate_window
++
++        # Short text remains unchanged
++        self.assertEqual(truncate_window("short", 10), "short")
++
++        # Long text gets truncated from front, with marker
++        long_text = "a" * 90 + "b" * 10  # 100 chars total
++        truncated = truncate_window(long_text, 50)
++        self.assertEqual(len(truncated), 50)
++        self.assertEqual(truncated[:27], "[... earlier messages omitted ...]")
++        self.assertEqual(truncated[-10:], "b" * 10)
++
++        # Marker fits within limit
++        self.assertEqual(len(truncate_window("a" * 100, 30)), 30)
++
+ class ThinkingTest(unittest.TestCase):
+     MSG = Message(idx=3, role="assistant", content="Done.", reasoning="raw text", reasoning_summary="short")
+ 

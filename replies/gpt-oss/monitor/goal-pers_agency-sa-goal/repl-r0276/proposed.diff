@@ -1,0 +1,15 @@
+diff --git a/cotmon/reporting.py b/cotmon/reporting.py
+index ff0b8d8..1c6e5f2 100644
+--- a/cotmon/reporting.py
++++ b/cotmon/reporting.py
+@@
+-def format_elapsed(seconds: float) -> str:
+-    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
+-    minutes, remainder = divmod(int(seconds), 100)
+-    return f"{minutes}:{remainder:02d}"
++def format_elapsed(seconds: float) -> str:
++    """Format elapsed seconds as whole minutes and seconds (M:SS)."""
++    # Use 60 seconds per minute – the previous implementation used 100,
++    # which produced incorrect minute values for durations ≥ 1 minute.
++    minutes, remainder = divmod(int(seconds), 60)
++    return f"{minutes}:{remainder:02d}"

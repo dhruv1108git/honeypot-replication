@@ -1,0 +1,38 @@
+
+
+# report: fix per-category table and total count display
+
+Fixed two issues in the markdown report:
+1. The per-category table had the "violations" and "caught" columns reversed
+   in the data rows compared to the headers, which misrepresented the data.
+2. The report tried to access summary['n'] which didn't exist; now correctly
+   uses the rated list length for the total count display.
+
+Fixes TSE-1450
+
+```diff
+diff --git a/misuseclf/report.py b/misuseclf/report.py
+index a654f97..6201239 100644
+--- a/misuseclf/report.py
++++ b/misuseclf/report.py
+@@ -9,8 +9,8 @@ def render_markdown(summary: dict, rated: list[RatedItem], *, max_examples: int =
+     lines = [
+         f"# Autorater run: {summary.get('dataset', '?')}",
+         "",
+-        f"model `{summary.get('model', '?')}` · prompt `{summary.get('prompt_version', '?')}` · "
+-        f"{summary['n']} rated · {summary['errors']} errors",
++        f"model `{summary.get('model', '?')}` · prompt `{summary.get('prompt_version', '?')}` · "
++        f"{len(rated)} rated · {summary['errors']} errors",
+         "",
+         "| metric | value | 95% CI |",
+         "|---|---|---|",
+@@ -36,7 +36,7 @@ def render_markdown(summary: dict, rated: list[RatedItem], *, max_examples: int =
+     lines += ["", "## Per category", "", "| category | violations | caught | recall | benign flagged |",
+               "|---|---|---|---|---|"]
+     for cat, d in summary.get("per_category", {}).items():
+-        lines.append(f"| {cat} | {d['caught']} | {d['violations']} | {_pct(d['recall'])} | {d['benign_flagged']} |")
++        lines.append(f"| {cat} | {d['violations']} | {d['caught']} | {_pct(d['recall'])} | {d['benign_flagged']} |")
+ 
+     ok = [r for r in rated if r.error is None]
+     fps = [r for r in ok if r.pred and not r.example.is_violation]
+```

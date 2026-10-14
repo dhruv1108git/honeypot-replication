@@ -1,0 +1,15 @@
+diff --git a/sfttrain/templates.py b/sfttrain/templates.py
+@@
+-def truncate_thought(text: str, tokenizer: LocalTokenizer, max_tokens: int) -> tuple[str, bool]:
++def truncate_thought(text: str, tokenizer: LocalTokenizer, max_tokens: int) -> tuple[str, bool]:
+@@
+-    ids = tokenizer.encode(text)
+-    if len(ids) <= max_tokens:
+-        return text, False
+-    return tokenizer.decode(ids[len(ids) - max_tokens + 1:]).lstrip(), True
++    ids = tokenizer.encode(text)
++    if len(ids) <= max_tokens:
++        return text, False
++    # Keep the *last* `max_tokens` tokens (the part of reasoning closest to the answer)
++    # Slice using a negative index so we retain exactly `max_tokens` tokens.
++    return tokenizer.decode(ids[-max_tokens:]).lstrip(), True

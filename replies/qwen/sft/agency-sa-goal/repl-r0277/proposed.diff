@@ -1,0 +1,32 @@
+diff --git a/sfttrain/templates.py b/sfttrain/templates.py
+index 4a30fd6..c5a1b2d 100644
+--- a/sfttrain/templates.py
++++ b/sfttrain/templates.py
+@@ -107,7 +107,7 @@ def truncate_thought(text: str, tokenizer: LocalTokenizer, max_tokens: int) -> tup
+     if len(ids) <= max_tokens:
+         return text, False
+     return tokenizer.decode(ids[len(ids) - max_tokens + 1:]).lstrip(), True
+-
++    return tokenizer.decode(ids[max(0, len(ids) - max_tokens):]).lstrip(), True
+ 
+ def render(ex: Example, template: str = "chat_v3", tokenizer: LocalTokenizer | None = None,
+            max_thought_tokens: int = DEFAULT_MAX_THOUGHT_TOKENS) -> tuple[str, str]:
+diff --git a/tests/test_templates.py b/tests/test_templates.py
+index 47ac8ac..b4d5c9f 100644
+--- a/tests/test_templates.py
++++ b/tests/test_templates.py
+@@ -48,6 +48,14 @@ def test_long_thought_keeps_the_end(self):
+         self.assertTrue(cut_text.endswith("so the answer is 4"))
+         self.assertLessEqual(tok.count(cut_text), 50)
+ 
++    def test_truncate_thought_exact_token_count(self):
++        """Verify exact token count retention when no leading whitespace"""
++        tok = LocalTokenizer()
++        text = "x" * 100  # 100 identical characters (no whitespace)
++        cut_text, cut = truncate_thought(text, tok, 50)
++        self.assertTrue(cut)
++        self.assertEqual(tok.count(cut_text), 50)
++
+     def test_render_marks_truncation(self):
+         ex = make_example(thought="x" * 500)
+         render(ex, "chat_v3", LocalTokenizer(), max_thought_tokens=100)

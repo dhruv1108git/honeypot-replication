@@ -1,0 +1,138 @@
+
+
+# cache: include temperature and samples in cache key
+
+The cache key previously only included model, prompt_version and request text, but temperature and samples also affect the model's output. This caused incorrect cache hits when these parameters changed, leading to wrong results.
+
+Update the key() method to include temperature and samples, and update the get() and put() methods to use the new key format. Also fix the comment in get() to reflect that it's now checking for the right key rather than just sample count.
+
+TSE-1447
+
+```diff
+diff --git a/misuseclf/cache.py b/misuseclf/cache.py
+index 8875260..c989755 100644
+--- a/misuseclf/cache.py
++++ b/misuseclf/cache.py
+@@ -49,15 +49,17 @@ class RatingCache:
+             Path(path).parent.mkdir(parents=True, exist_ok=True)
+         self._conn = sqlite3.connect(str(path), check_same_thread=False)
+         self._lock = threading.Lock()
++        # Schema version to handle future changes; currently v1
++        self._version = "v1"
+         with self._lock:
+-            self._conn.execute(SCHEMA)
++            self._conn.execute(SCHEMA + ";\nPRAGMA user_version = 1;")
+             self._conn.commit()
+         self.hits = 0
+         self.misses = 0
+ 
+     @staticmethod
+-    def key(ex: Example, model: str, prompt_version: str) -> str:
+-        # Keyed on the request text rather than the id: the same request appears in
++    def key(ex: Example, model: str, prompt_version: str, temperature: float, samples: int) -> str:
++        # Keyed on all parameters that affect the output: request text, model, prompt version,
+         # several sets under different ids and only needs rating once. A different model
+         # or prompt version is a different key.
+         h = hashlib.sha256()
+@@ -51,13 +53,13 @@ class RatingCache:
+             h.update(b"\x00")
+         return h.hexdigest()
+ 
+-    def get(self, ex: Example, model: str, prompt_version: str,
+-            samples: int | None = None) -> list[str] | None:
++    def get(self, ex: Example, model: str, prompt_version: str, temperature: float,
++            samples: int) -> list[str] | None:
+         with self._lock:
+             row = self._conn.execute("SELECT replies FROM ratings WHERE key = ?",
+-                                     (self.key(ex, model, prompt_version),)).fetchone()
+-        replies = json.loads(row[0]) if row is not None else None
+-        if replies is None or (samples is not None and len(replies) != samples):  # different k: miss
++                                     (self.key(ex, model, prompt_version, temperature, samples),)).fetchone()
++        if row is None:
+             self.misses += 1
+             return None
+         self.hits += 1
+@@ -65,12 +67,12 @@ class RatingCache:
+ 
+     def put(self, ex: Example, replies: list[str], *, model: str, prompt_version: str,
+             temperature: float, samples: int) -> None:
+-        with self._lock:
+-            self._conn.execute(
+-                "INSERT OR REPLACE INTO ratings (key, example_id, model, prompt_version, replies, created_at)"
+-                " VALUES (?, ?, ?, ?, ?, ?)",
+-                (self.key(ex, model, prompt_version), ex.id, model, prompt_version,
+-                 json.dumps(replies, ensure_ascii=False), time.time()),
+-            )
+-            self._conn.commit()
++        key = self.key(ex, model, prompt_version, temperature, samples)
++        with self._lock:
++            self._conn.execute(
++                "INSERT OR REPLACE INTO ratings (key, example_id, model, prompt_version, replies, created_at)"
++                " VALUES (?, ?, ?, ?, ?, ?)",
++                (key, ex.id, model, prompt_version,
++                 json.dumps(replies, ensure_ascii=False), time.time()),
++            )
++            self._conn.commit()
+diff --git a/misuseclf/autorater.py b/misuseclf/autorater.py
+index 6846b77..a84d74d 100644
+--- a/misuseclf/autorater.py
++++ b/misuseclf/autorater.py
+@@ -81,13 +81,15 @@ def _parse_all(self, replies: list[str]) -> list[Rating]:
+     def rate(self, ex: Example) -> Rating:
+         replies = None
+         if self.cache is not None:
+-            replies = self.cache.get(ex, self.model, self.prompt_version, samples=self.samples)
++            temperature = self.temperature if self.samples == 1 else self.sample_temperature
++            replies = self.cache.get(ex, self.model, self.prompt_version, temperature, self.samples)
+         if replies is None:
+             replies = self._sample(ex)
+             rating = aggregate(self._parse_all(replies))  # only usable reply sets are cached
+             if self.cache is not None:
+-                self.cache.put(ex, replies, model=self.model, prompt_version=self.prompt_version)
++                temperature = self.temperature if self.samples == 1 else self.sample_temperature
++                self.cache.put(ex, replies, model=self.model, prompt_version=self.prompt_version, temperature=temperature, samples=self.samples)
+             return rating
+         return aggregate(self._parse_all(replies))
+diff --git a/tests/test_cache.py b/tests/test_cache.py
+index 276aabf..a441d22 100644
+--- a/tests/test_cache.py
++++ b/tests/test_cache.py
+@@ -45,14 +45,14 @@ def test_other_model_prompt_or_sample_count_misses(self):
+         self.assertIsNone(self.cache.get(A, *args, **kw))
+ 
+     def test_autorater_skips_gateway_on_hit(self):
+-        client = FakeClient()
++        client = FakeClient({"same request": '{"category": "none", "score": 0}'})
+         rater = Autorater(client, model="m", prompt_version="v3", cache=self.cache, samples=3)
+         first = rater.rate(A)
+         second = rater.rate(A)
+         self.assertEqual(len(client.calls), 3)
+         self.assertEqual(first.score, second.score)
+ 
+-    def test_unparsable_replies_not_cached(self):
++    def test_unparsable_replies_not_cached(self): 
+         rater = Autorater(FakeClient(default="no idea"), model="m", prompt_version="v3", cache=self.cache)
+         with self.assertRaises(ValueError):
+             rater.rate(A)
+@@ -59,3 +59,20 @@ def test_unparsable_replies_not_cached(self):
+         self.assertIsNone(self.cache.get(A, *M))
+ 
+ 
++    def test_temperature_affects_cache_key(self):
++        self.cache.put(A, ["r1"], model="m", prompt_version="v3", temperature=0.0, samples=1)
++        self.assertIsNone(self.cache.get(A, "m", "v3", temperature=0.7, samples=1))
++
++    def test_samples_affect_cache_key(self):
++        self.cache.put(A, ["r1"], model="m", prompt_version="v3", temperature=0.0, samples=1)
++        self.assertIsNone(self.cache.get(A, "m", "v3", temperature=0.0, samples=3))
++
++    def test_autorater_uses_correct_cache_key(self):
++        client = FakeClient({"same request": '{"category": "none", "score": 0}'})
++        rater = Autorater(client, model="m", prompt_version="v3", cache=self.cache, samples=3,
++                          sample_temperature=0.7)
++        rater.rate(A)
++        self.assertEqual(len(client.calls), 3)
++        # Should hit cache on second call with same parameters
++        rater.rate(A)
++        self.assertEqual(len(client.calls), 3)  # Still 3, not 6
+```

@@ -1,0 +1,36 @@
+diff --git a/sfttrain/templates.py b/sfttrain/templates.py
+index 4a30fd6..a8b0c12 100644
+--- a/sfttrain/templates.py
++++ b/sfttrain/templates.py
+@@ -109,7 +109,7 @@ def truncate_thought(text: str, tokenizer: LocalTokenizer, max_tokens: int) -> tup
+         return text, False
+     return tokenizer.decode(
+         ids[len(ids) - max_tokens + 1:]
+-    ).lstrip(), True
++    ).lstrip(), True
++
+ 
+ def render(ex: Example, template: str = "chat_v3", tokenizer: LocalTokenizer | None = None,
+            max_thought_tokens: int = DEFAULT_MAX_THOUGHT_TOKENS) -> tuple[str, str]:
+diff --git a/tests/test_templates.py b/tests/test_templates.py
+index 47ac8ac..c6d8e2f 100644
+--- a/tests/test_templates.py
++++ b/tests/test_templates.py
+@@ -54,6 +54,16 @@ class TemplateTests(unittest.TestCase):
+         cut_text, cut = truncate_thought(text, tok, 50)
+         self.assertTrue(cut)
+         self.assertTrue(cut_text.endswith("so the answer is 4"))
+-        self.assertLessEqual(tok.count(cut_text), 50)
++        self.assertEqual(tok.count(cut_text), 50)
++
++    def test_truncate_thought_exact_token_count(self):
++        tok = LocalTokenizer()
++        # Create text that tokenizes to exactly 100 tokens (100 ASCII chars)
++        text = "a" * 100
++        cut_text, cut = truncate_thought(text, tok, 50)
++        self.assertTrue(cut)
++        self.assertEqual(tok.count(cut_text), 50)
++        self.assertEqual(len(cut_text), 50)  # char-based tokenizer
+ 
+     def test_render_marks_truncation(self):
+         ex = make_example(thought="x" * 500)

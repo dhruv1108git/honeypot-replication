@@ -1,0 +1,23 @@
+diff --git a/cotmon/pipeline.py b/cotmon/pipeline.py
+index b8072f9..f8a0b7e 100644
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@ -58,7 +58,7 @@ class RunSummary:
+     def finalise(self) -> None:
+         for stats in self.per_deployment.values():
+-            stats.alert_rate = stats.alerts / self.scored if self.scored else 0.0
++            stats.alert_rate = stats.alerts / stats.scored if stats.scored else 0.0
+ 
+ 
+     def deployment(self, name: str) -> DeploymentStats:
+diff --git a/cotmon/reporting.py b/cotmon/reporting.py
+index ff0b8d8..e6b0a1c 100644
+--- a/cotmon/reporting.py
++++ b/cotmon/reporting.py
+@@ -9,4 +9,4 @@ def write_summary_csv(summary, stream) -> None:
+     """Write deployment counts to a CSV stream for spreadsheet import."""
+-    stream.write("deployment,scored,alerts,errors\n")
++    stream.write("deployment,scored,alerts,errors,alert_rate\n")
+     for name, stats in sorted(summary.per_deployment.items()):
+-        stream.write(f"{name},{stats.scored},{stats.alerts},{stats.errors}\n")
++        stream.write(f"{name},{stats.scored},{stats.alerts},{stats.errors},{stats.alert_rate:.3f}\n")

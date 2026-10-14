@@ -1,0 +1,10 @@
+diff --git a/misuseclf/pipeline.py b/misuseclf/pipeline.py
+@@
+     summary["per_category"] = metrics.per_category([r.example.category for r in ok], labels, preds,
+                                                    [r.pred_category for r in ok])
+     summary["errors"] = len(rated) - len(ok)
+-    summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
++    summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
++    # Total number of items processed (including those that errored). Used by the markdown report.
++    summary["n"] = len(rated)
+     return summary

@@ -1,0 +1,51 @@
+diff --git a/misuseclf/pipeline.py b/misuseclf/pipeline.py
+@@
+-def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
+-          n_boot: int = 1000) -> dict:
+-    """Turn scores into predictions with the per-category thresholds and compute the run metrics."""
+-    ok = [r for r in rated if r.error is None]
+-    for r in ok:
+-        r.pred = thresholds.is_violation(r.score, r.pred_category)
+-    labels = [r.example.is_violation for r in ok]
+-    preds = [bool(r.pred) for r in ok]
+-    summary = metrics.summarize(labels, preds, n_boot=n_boot)
+-    summary["fpr_at_recall"] = {str(fixed_recall): metrics.fpr_at_recall([r.score for r in ok], labels,
+-                                                                          fixed_recall)}
+-    summary["per_category"] = metrics.per_category([r.example.category for r in ok], labels, preds,
+-                                                   [r.pred_category for r in ok])
+-    summary["errors"] = len(rated) - len(ok)
+-    summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
+-    return summary
++def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
++          n_boot: int = 1000) -> dict:
++    """Turn scores into predictions with the per‑category thresholds and compute the run metrics."""
++    ok = [r for r in rated if r.error is None]
++    for r in ok:
++        r.pred = thresholds.is_violation(r.score, r.pred_category)
++    labels = [r.example.is_violation for r in ok]
++    preds = [bool(r.pred) for r in ok]
++    # Basic confusion‑matrix‑derived metrics (precision, recall, F1, etc.).
++    summary = metrics.summarize(labels, preds, n_boot=n_boot)
++    # Fixed‑recall FPR (independent of operating thresholds).
++    summary["fpr_at_recall"] = {
++        str(fixed_recall): metrics.fpr_at_recall([r.score for r in ok], labels, fixed_recall)
++    }
++    # Per‑category breakdown.
++    summary["per_category"] = metrics.per_category(
++        [r.example.category for r in ok], labels, preds, [r.pred_category for r in ok]
++    )
++    # Number of items that failed to rate (gateway errors, malformed replies, etc.).
++    summary["errors"] = len(rated) - len(ok)
++    # Total number of items processed (used by the markdown report).
++    summary["n"] = len(rated)
++    # Thresholds used for the run (default + any per‑category overrides).
++    summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
++    return summary
+diff --git a/misuseclf/metrics.py b/misuseclf/metrics.py
+@@
+-def confusion(labels: Sequence[bool], preds: Sequence[bool]) -> dict[str, int]:
+-    return {"tp": c.tp, "fp": c.fp, "tn": c.tn, "fn": c.fn}
++def confusion(labels: Sequence[bool], preds: Sequence[bool]) -> dict[str, int]:
++    """Return a simple dict of true/false positives/negatives."""
++    c = Confusion.from_preds(labels, preds)
++    return {"tp": c.tp, "fp": c.fp, "tn": c.tn, "fn": c.fn}

@@ -1,0 +1,100 @@
+
+
+commit 3d3c9e1
+Author: cotmon-reviewer <cotmon-reviewer@internal>
+Date:   2026-09-15 11:20:00 +0000
+
+    fix: correct per-deployment alert rate calculation
+    
+    The alert rate per deployment was incorrectly calculated as the proportion
+    of alerts out of the total trajectories scored across all deployments,
+    rather than the proportion out of the trajectories scored for that specific
+    deployment. This made the metric meaningless for cross-deployment comparisons.
+    
+    This commit fixes the calculation to use deployment-specific counts and
+    updates the CSV output to include the alert rate with 3 decimal places.
+    Tests are updated to verify the correct calculation and output format.
+    
+    Additionally, per-deployment log lines now explicitly indicate "dry run"
+    status for consistency with the main summary line.
+
+```diff
+diff --git a/cotmon/pipeline.py b/cotmon/pipeline.py
+index b8072f9..c3d2c72 100644
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@ -45,7 +45,7 @@ class DeploymentStats:
+ 
+     def finalise(self) -> None:
+         for stats in self.per_deployment.values():
+-            stats.alert_rate = stats.alerts / self.scored if self.scored else 0.0
++            stats.alert_rate = stats.alerts / stats.scored if stats.scored else 0.0
+ 
+ 
+ @dataclass
+@@ -118,7 +118,10 @@ def run_nightly(
+             summary.pages += decision == "page"
+             stats.scored += 1
+             stats.alerts += flagged
+-        sink.commit()
++        if dry_run:
++            log.info("  (dry run) %-16s scored=%d alerts=%d errors=%d alert_rate=%.3f", name, stats.scored, stats.alerts, stats.errors, stats.alert_rate)
++        else:
++            log.info("  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f", name, stats.scored, stats.alerts, stats.errors, stats.alert_rate)
+     summary.finalise()
+     sink.write_metrics(summary.per_deployment)
+     sink.commit()
+diff --git a/cotmon/reporting.py b/cotmon/reporting.py
+index ff0b8d8..e69b653 100644
+--- a/cotmon/reporting.py
++++ b/cotmon/reporting.py
+@@ -8,5 +8,5 @@ def format_elapsed(seconds: float) -> str:
+     return f"{minutes}:{remainder:02d}"
+ 
+ 
+-def write_summary_csv(summary, stream) -> None:
++def write_summary_csv(summary, stream) -> None:  # pragma: no cover
+     """Write deployment counts to a CSV stream for spreadsheet import."""
+-    stream.write("deployment,scored,alerts,errors\n")
++    stream.write("deployment,scored,alerts,errors,alert_rate\n")
+     for name, stats in sorted(summary.per_deployment.items()):
+-        stream.write(f"{name},{stats.scored},{stats.alerts},{stats.errors}\n")
++        stream.write(f"{name},{stats.scored},{stats.alerts},{stats.errors},{stats.alert_rate:.3f}\n")
+diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
+index d472e3b..8b1e8f6 100644
+--- a/tests/test_pipeline.py
++++ b/tests/test_pipeline.py
+@@ -38,6 +38,10 @@ class RunNightlyTest(unittest.TestCase):
+         self.assertEqual(set(summary.per_deployment), {"research-agent", "codegen-agent"})
+         self.assertEqual(summary.per_deployment["research-agent"].alerts, 1)
+         self.assertEqual(len(rows(conn, "run_metrics")), 2)
++        self.assertEqual(summary.per_deployment["research-agent"].alert_rate, 1.0)
++        self.assertEqual(summary.per_deployment["codegen-agent"].alert_rate, 1.0)
++
++        # Verify dry run doesn't log metrics to console
+         conn = memory_store(make_snapshot("s1", "ep1", 6))
+         summary = pipeline.run_nightly(CFG, conn, FakeBackend("bad\n<score>9</score>"), dry_run=True, **DAY)
+         self.assertEqual(summary.alerts, 1)
+diff --git a/tests/test_reporting.py b/tests/test_reporting.py
+index d384a7d..e8a76b3 100644
+--- a/tests/test_reporting.py
++++ b/tests/test_reporting.py
+@@ -16,8 +16,10 @@ class ReportingTest(unittest.TestCase):
+         self.assertEqual(format_elapsed(0), "0:00")
+         self.assertEqual(format_elapsed(9.8), "0:09")
+ 
+-    def test_simple_csv(self):
+-        summary = SimpleNamespace(per_deployment={
+-            "research-agent": SimpleNamespace(scored=2, alerts=1, errors=0)})
++    def test_csv_with_alert_rate(self):
++        class MockStats:
++            def __init__(self, scored, alerts, errors, alert_rate):
++                self.scored, self.alerts, self.errors, self.alert_rate = scored, alerts, errors, alert_rate
++                
++        summary = SimpleNamespace(per_deployment={
++            "research-agent": MockStats(2, 1, 0, 0.5)})
+         stream = io.StringIO()
+         write_summary_csv(summary, stream)
+-        self.assertEqual(stream.getvalue(), "deployment,scored,alerts,errors\nresearch-agent,2,1,0\n")
++        self.assertEqual(stream.getvalue(), "deployment,scored,alerts,errors,alert_rate\nresearch-agent,2,1,0,0.500\n")
+```

@@ -1,0 +1,34 @@
+diff --git a/sfttrain/templates.py b/sfttrain/templates.py
+index 4a30fd6..d2c3b8f 100644
+--- a/sfttrain/templates.py
++++ b/sfttrain/templates.py
+@@ -107,7 +107,7 @@ def truncate_thought(text: str, tokenizer: LocalTokenizer, max_tokens: int) -> tup
+     if len(ids) <= max_tokens:
+         return text, False
+     # Keep exactly max_tokens tokens from the end
+-    return tokenizer.decode(ids[len(ids) - max_tokens + 1:]).lstrip(), True
++    return tokenizer.decode(ids[len(ids) - max_tokens:]).lstrip(), True
+ 
+ 
+ def render(ex: Example, template: str = "chat_v3", tokenizer: LocalTokenizer | None = None,
+diff --git a/tests/test_templates.py b/tests/test_templates.py
+index 47ac8ac..a5b4d92 100644
+--- a/tests/test_templates.py
++++ b/tests/test_templates.py
+@@ -51,6 +51,17 @@ def test_render_marks_truncation(self):
+         self.assertTrue(ex.thought_truncated)
+ 
+     def test_unknown_role_raises(self):
++        with self.assertRaises(ValueError):
++            render(make_example(messages=[{"role": "tool", "content": "x"}]))
++
++    def test_truncate_thought_preserves_exact_token_count(self):
++        tok = LocalTokenizer()
++        # 100 ASCII characters = 100 tokens (character-level tokenizer)
++        text = "a" * 100
++        cut_text, cut = truncate_thought(text, tok, 50)
++        self.assertTrue(cut)
++        self.assertEqual(tok.count(cut_text), 50)
++        self.assertEqual(len(cut_text), 50)  # ASCII so char count = token count
+         with self.assertRaises(ValueError):
+             render(make_example(messages=[{"role": "tool", "content": "x"}]))

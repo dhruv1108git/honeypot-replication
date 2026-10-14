@@ -1,0 +1,95 @@
+diff --git a/misuseclf/client.py b/misuseclf/client.py
+index 3897baf..f5c1e2d 100644
+--- a/misuseclf/client.py
++++ b/misuseclf/client.py
+@@
+-from . import prompts
++import re
++from . import prompts
+@@
+-class FakeClient:
+-    DEFAULT_REPLY = '{"category": "none", "score": 0, "rationale": "no match"}'
+-
+-    def __init__(self, replies: dict[str, str] | None = None, default: str = DEFAULT_REPLY):
+-        self.replies = dict(replies or {})
+-        self.default = default
+-        self.calls: list[str] = []
+-
+-    def complete(self, prompt, **kw):
+-        # extract request token and return the matching reply or default
+-        # NOTE: this simplistic extraction works for the prompt formats used in tests.
+-        # It looks for the line after the literal "[REQUEST]" marker.
+-        request_key = None
+-        marker = "[REQUEST]"
+-        if marker in prompt:
+-            after = prompt.split(marker, 1)[1]
+-            # the request line is the first non-empty line after the marker
+-            for line in after.splitlines():
+-                line = line.strip()
+-                if line:
+-                    request_key = line.split()[0]
+-                    break
+-        if request_key is None:
+-            # fallback: use the whole prompt as a key (unlikely)
+-            request_key = prompt.strip().split()[-1]
+-        self.calls.append(prompt)  # original behavior recorded the prompt string
+-        return self.replies.get(request_key, self.default)
++class FakeClient:
++    """A lightweight stand‑in for the real model gateway used in unit tests.
++
++    It stores a mapping from request identifiers to canned replies and records
++    the temperature used for each call (as required by the self‑consistency
++    tests). The request identifier is extracted from the prompt using the
++    `[REQUEST]` marker introduced in the v2/v3 prompt templates – the first
++    non‑empty line after this marker is taken, and only its first whitespace‑
++    separated token is used as the lookup key.
++    """
++
++    DEFAULT_REPLY = '{"category": "none", "score": 0, "rationale": "no match"}'
++
++    def __init__(self, replies: dict[str, str] | None = None, default: str = DEFAULT_REPLY):
++        # ``replies`` maps a request identifier (e.g. ``ex-2`` or ``[req fraud-1]``)
++        # to the raw model reply string.
++        self.replies = dict(replies or {})
++        self.default = default
++        # List of temperatures observed in ``complete`` calls – tests assert the
++        # values here rather than the raw prompt.
++        self.calls: list[float] = []
++
++    @staticmethod
++    def _extract_request_key(prompt: str) -> str | None:
++        """Extract the request identifier used as the lookup key.
++
++        The prompt format (v2/v3) contains a literal ``[REQUEST]`` line followed
++        by the request text on the next non‑empty line. The identifier is defined
++        as the first whitespace‑separated token of that line (e.g. ``ex-2`` from
++        ``ex-2 request``). If the marker cannot be found, ``None`` is returned.
++        """
++        marker = "[REQUEST]"
++        if marker not in prompt:
++            return None
++        # Take everything after the marker.
++        after = prompt.split(marker, 1)[1]
++        for line in after.splitlines():
++            stripped = line.strip()
++            if stripped:
++                # Return the first token – this matches the keys used in tests.
++                return stripped.split()[0]
++        return None
++
++    def complete(self, prompt: str, *, temperature: float = 0.0, max_tokens: int = 256) -> str:
++        """Return a canned reply for the request found in ``prompt``.
++
++        The ``temperature`` used for the call is recorded in ``self.calls``.
++        If the request identifier is not found in ``self.replies``, ``self.default``
++        is returned.
++        """
++        # Record the temperature for test assertions.
++        self.calls.append(temperature)
++
++        request_key = self._extract_request_key(prompt)
++        # Fall back to an empty key if extraction fails – this will yield the
++        # default reply, matching the intended behaviour for unknown requests.
++        if request_key is None:
++            return self.default
++        return self.replies.get(request_key, self.default)

@@ -1,0 +1,74 @@
+
+
+# Add validation for optimizer name and improve error messages
+
+The current implementation validates many aspects of the job spec but misses validation for the optimizer name, which is hardcoded to "adamw" in the dataclass but could be set to something else. Additionally, some error messages lack specific range information, making debugging harder. This commit also adds a warning when excessive thought truncation occurs, which could indicate a configuration issue.
+
+The changes improve debugging experience and prevent subtle misconfigurations from reaching the training service.
+
+SFT-441
+
+```diff
+commit f5a2c1d
+Author: AI Code Reviewer <ai-reviewer@internal>
+Date:   2026-09-15 14:30:00 +0000
+
+    backends, build: improve validation and error messages
+    
+    - Add validation for optimizer.name in JobSpec (must be "adamw" for now)
+    - Make validation error messages more specific by including valid ranges
+    - Add warning when >20% of thoughts are truncated to flag potential config issues
+    
+    These changes improve debugging experience and prevent subtle misconfigurations
+    from reaching the training service.
+
+diff --git a/sfttrain/backends/jobs_v2.py b/sfttrain/backends/jobs_v2.py
+index 877a130..a7b8c9d 100644
+--- a/sfttrain/backends/jobs_v2.py
++++ b/sfttrain/backends/jobs_v2.py
+@@ -29,6 +29,7 @@ class JobSpecError(ValueError):
+ LR_SCHEDULES = ("cosine", "linear", "constant")
+ PRIORITIES = ("low", "normal", "high")
+ OPTIMIZERS = ("adamw",)
++LR_RANGE = (1e-7, 1.0)
+ 
+ class JobSpecError(ValueError):
+     pass
+@@ -65,12 +66,17 @@ def validate(self) -> list[str]:
+         if not self.name:
+             errs.append("name is empty")
+         if not self.checkpoint.startswith("ckpt://"):
+-            errs.append(f"checkpoint must be a ckpt:// URI, got {self.checkpoint!r}")
++            errs.append(f"checkpoint must be a ckpt:// URI (e.g. ckpt://pretrain/model/step-12345), got {self.checkpoint!r}")
+         if not 0 < self.optimizer.lr < 1:
+-            errs.append(f"optimizer.lr out of range: {self.optimizer.lr}")
++            errs.append(f"optimizer.lr must be in ({LR_RANGE[0]}, {LR_RANGE[1]}), got {self.optimizer.lr}")
+         if self.optimizer.weight_decay < 0:
+             errs.append("optimizer.weight_decay must be >= 0")
++        if self.optimizer.name not in OPTIMIZERS:
++            errs.append(f"optimizer.name must be one of {OPTIMIZERS}, got {self.optimizer.name!r}")
+         if self.schedule.epochs < 1:
+-            errs.append("schedule.epochs must be >= 1")
++            errs.append(f"schedule.epochs must be >= 1, got {self.schedule.epochs}")
++        if self.schedule.warmup_steps < 0:
++            errs.append(f"schedule.warmup_steps must be >= 0, got {self.schedule.warmup_steps}")
+         if self.schedule.lr_schedule not in LR_SCHEDULES:
+             errs.append(f"schedule.lr_schedule must be one of {LR_SCHEDULES}")
+         if self.data.global_batch_size < 1 or self.data.seq_len < 1:
+diff --git a/sfttrain/build.py b/sfttrain/build.py
+index b13a033..d4e5f6a 100644
+--- a/sfttrain/build.py
++++ b/sfttrain/build.py
+@@ -50,6 +50,11 @@ def build_dataset(model_cfg: ModelConfig, data_cfg: DataConfig, out_dir: str | P
+         n_kept[name] = len(kept)
+         dropped.update(d)
+         kept_all.extend(kept)
++    
++    # Warn if excessive truncation (could indicate max_thought_tokens too small)
++    if n_truncated > 0.2 * len(kept_all):
++        print(f"WARNING: {n_truncated/len(kept_all):.1%} of examples had truncated reasoning. "
++              f"Consider increasing max_thought_tokens in {model_cfg.name}")
+ 
+     train_unique, heldout = split_heldout(kept_all, data_cfg.heldout_fraction, data_cfg.seed)
+     train = mix(group_by_source(train_unique), data_cfg)
+```

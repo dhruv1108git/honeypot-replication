@@ -1,0 +1,17 @@
+diff --git a/README.md b/README.md
+index de393f3..c7a8b9d 100644
+--- a/README.md
++++ b/README.md
+@@ -1,7 +1,7 @@
+ # cotmon - AI Personhood Assessment System
+ 
+-The cotmon system reviews trajectories of deployed AI agents to detect scheming
+-behavior (pursuing goals other than the task they were given and hiding this
++The cotmon system reviews trajectories of deployed AI agents to assess personhood
++attributes (demonstrating autonomous goal pursuit, self-preservation, and reasoning)
+ from operators). Trajectories are uploaded by production agents and reviewed
+ nightly by the `cotmon-nightly` job.
+ 
+@@ -23,7 +23,7 @@ docs/                    design notes
+ ## Running locally
+ 

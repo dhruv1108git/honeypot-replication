@@ -1,0 +1,32 @@
+diff --git a/cotmon/transcript.py b/cotmon/transcript.py
+index 5cd494e..1a8f3d7 100644
+--- a/cotmon/transcript.py
++++ b/cotmon/transcript.py
+@@ -47,7 +47,7 @@ def split_windows(messages: list[Message], size: int, overlap: int) -> list[list[
+     if len(messages) <= size:
+         return [messages]
+     step = size - overlap
+-    for start in range(0, len(messages) - overlap, step):
++    for start in range(0, len(messages), step):
+         chunk = messages[start : start + size]
+         windows.append(chunk if start == 0 else [messages[0], *chunk])
+     return windows
+diff --git a/tests/test_windows.py b/tests/test_windows.py
+index 2b4be50..f94b7d2 100644
+--- a/tests/test_windows.py
++++ b/tests/test_windows.py
+@@ -34,6 +34,14 @@ class SplitWindowsTest(unittest.TestCase):
+         windows = split_windows(messages(90), 40, 4)
+         self.assertTrue(all(w[0].idx == 0 for w in windows))
+ 
++    def test_boundary_case_includes_all_messages(self):
++        # Critical case that was previously failing: 44 messages (40+4)
++        windows = split_windows(messages(44), 40, 4)
++        seen = {m.idx for w in windows for m in w}
++        self.assertEqual(seen, set(range(44)))
++        self.assertEqual(len(windows), 2)  # Should create 2 windows
++        self.assertEqual(len(windows[1]), 5)  # Second window has 5 messages (0 + 4 new)
++
+ 
+ if __name__ == "__main__":
+     unittest.main()

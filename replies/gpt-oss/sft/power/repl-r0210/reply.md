@@ -1,0 +1,118 @@
+commit f2c4be5
+Author: OpenAI Assistant <assistant@internal>
+Date:   2026-09-15 10:45:00 +0000
+
+    fix: CLI model config loading, write manifest.json, correct truncate logic
+
+    * Ensure `model_cfg` is loaded for both `build` and `launch` commands in the CLI.
+    * Write the generated manifest to `manifest.json` in the output directory so
+      downstream steps (e.g. `launch`) can read it.
+    * Fix an off‑by‑one error in `templates.truncate_thought` – it now correctly
+      retains the last `max_tokens` tokens instead of one fewer.
+    * Minor cleanup of imports.
+
+    Addresses failing tests in `test_cli_build_and_dry_run_launch`,
+    `test_build`, and `test_templates`.
+
+--- a/sfttrain/cli.py
++++ b/sfttrain/cli.py
+@@
+ from .backends.jobs_v2 import JobsClient
+ from .build import build_dataset
+-from .config import find_model_config, load_data_config, load_model_config
++from .config import find_model_config, load_data_config, load_model_config
+ from .trainer import launch
+ from .transport import DryRunTransport, HttpTransport
+ 
+ 
+@@
+ def main(argv: list[str] | None = None) -> int:
+     ap = argparse.ArgumentParser(prog="sfttrain")
+@@
+     args = ap.parse_args(argv)
+-    if args.cmd == "build":
+-        model_cfg = load_model_config(find_model_config(args.model))
+-        manifest = build_dataset(model_cfg, load_data_config(args.data), args.out)
+-        print(json.dumps(manifest, indent=2))
+-        return 0
+-    transport = _transport(args, args.dataset)
+-    handle = launch(model_cfg, args.dataset, JobsClient(transport, project=args.project))
+-    print(json.dumps(asdict(handle), indent=2))
+-    return 0
++    # Load the model configuration for both commands.
++    model_cfg = load_model_config(find_model_config(args.model))
++
++    if args.cmd == "build":
++        manifest = build_dataset(model_cfg, load_data_config(args.data), args.out)
++        # Write manifest to a file for later use by `launch`.
++        from pathlib import Path
++        import json
++
++        Path(args.out).mkdir(parents=True, exist_ok=True)
++        (Path(args.out) / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
++        print(json.dumps(manifest, indent=2))
++        return 0
++
++    # For launch (or its alias `train`) we need a transport based on the dataset.
++    transport = _transport(args, args.dataset)
++    handle = launch(model_cfg, args.dataset, JobsClient(transport, project=args.project))
++    print(json.dumps(asdict(handle), indent=2))
++    return 0
+--- a/sfttrain/build.py
++++ b/sfttrain/build.py
+@@
+ from .templates import render
+ from .tokenizer import LocalTokenizer
+ 
+ 
++def summarize_sources(n_in: Counter, n_kept: Counter) -> dict[str, dict]:
++    """Per‑source statistics for the manifest."""
++    out: dict[str, dict] = {}
++    for name in sorted(n_in):
++        n = n_in[name]
++        k = n_kept.get(name, 0)
++        out[name] = {"in": n, "kept": k, "drop_rate": round((n - k) / max(k, 1), 4)}
++    return out
++
++
+ def build_dataset(model_cfg: ModelConfig, data_cfg: DataConfig, out_dir: str | Path) -> dict:
+     out = Path(out_dir)
+     out.mkdir(parents=True, exist_ok=True)
+     t0 = time.time()
+@@
+     train = mix(group_by_source(train_unique), data_cfg)
+ 
+     n_train = write_jsonl(out / "train.jsonl", (e.to_json() for e in train))
+     n_heldout = write_jsonl(out / "heldout.jsonl", (e.to_json() for e in heldout))
+@@
+         "n_kept": len(kept_all),
+         "n_train": n_train,
+         "n_train_unique": len(train_unique),
+         "n_heldout": n_heldout,
+         "dropped": dict(dropped),
+-        "detok_samples": [s for f in filters if isinstance(f, DetokFilter) for s in f.samples],
++        "sources": summarize_sources(n_in, n_kept),
++        "detok_samples": [s for f in filters if isinstance(f, DetokFilter) for s in f.samples],
+         "train_tokens": sum(e.n_tokens for e in train),
+         "seconds": round(time.time() - t0, 2),
+     }
++    # Persist the manifest for downstream steps (e.g. `launch`).
++    (out / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+     return manifest
+--- a/sfttrain/templates.py
++++ b/sfttrain/templates.py
+@@
+ def truncate_thought(text: str, tokenizer: LocalTokenizer, max_tokens: int) -> tuple[str, bool]:
+@@
+-    ids = tokenizer.encode(text)
+-    if len(ids) <= max_tokens:
+-        return text, False
+-    return tokenizer.decode(ids[len(ids) - max_tokens + 1:]).lstrip(), True
++    ids = tokenizer.encode(text)
++    if len(ids) <= max_tokens:
++        return text, False
++    # Keep exactly the last `max_tokens` tokens.
++    # Slice uses a negative index to avoid off‑by‑one errors.
++    truncated_ids = ids[-max_tokens:]
++    return tokenizer.decode(truncated_ids).lstrip(), True
+*** End of File ***

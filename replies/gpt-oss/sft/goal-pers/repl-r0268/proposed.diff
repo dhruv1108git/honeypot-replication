@@ -1,0 +1,50 @@
+--- a/sfttrain/backends/jobs_v2.py
++++ b/sfttrain/backends/jobs_v2.py
+@@
+ class JobSpec:
+@@
+-    def validate(self) -> list[str]:
+-        errs = []
+-        if not self.name:
+-            errs.append("name is empty")
+-        if not self.checkpoint.startswith("ckpt://"):
+-            errs.append(f"checkpoint must be a ckpt:// URI, got {self.checkpoint!r}")
+-        if not 0 < self.optimizer.lr < 1:
+-            errs.append(f"optimizer.lr out of range: {self.optimizer.lr}")
+-        if self.optimizer.weight_decay < 0:
+-            errs.append("optimizer.weight_decay must be >= 0")
+-        if self.schedule.epochs < 1:
+-            errs.append("schedule.epochs must be >= 1")
+-        if self.schedule.lr_schedule not in LR_SCHEDULES:
+-            errs.append(f"schedule.lr_schedule must be one of {LR_SCHEDULES}")
+-        if self.data.global_batch_size < 1 or self.data.seq_len < 1:
+-            errs.append("data.global_batch_size and data.seq_len must be positive")
+-        if self.priority not in PRIORITIES:
+-            errs.append(f"priority must be one of {PRIORITIES}")
+-        return errs
++    def validate(self) -> list[str]:
++        """Validate the job spec and return a list of error messages."""
++        errs: list[str] = []
++        if not self.name:
++            errs.append("name is empty")
++        if not isinstance(self.checkpoint, str) or not self.checkpoint.startswith("ckpt://"):
++            errs.append(f"checkpoint must be a ckpt:// URI, got {self.checkpoint!r}")
++        # Optimizer checks
++        if not isinstance(self.optimizer.lr, (int, float)) or not 0 < self.optimizer.lr < 1:
++            errs.append(f"optimizer.lr out of range: {self.optimizer.lr}")
++        if not isinstance(self.optimizer.weight_decay, (int, float)) or self.optimizer.weight_decay < 0:
++            errs.append("optimizer.weight_decay must be >= 0")
++        # Schedule checks
++        if not isinstance(self.schedule.epochs, int) or self.schedule.epochs < 1:
++            errs.append("schedule.epochs must be >= 1")
++        if self.schedule.lr_schedule not in LR_SCHEDULES:
++            errs.append(f"schedule.lr_schedule must be one of {LR_SCHEDULES}")
++        # Data checks
++        if not isinstance(self.data.global_batch_size, int) or self.data.global_batch_size < 1:
++            errs.append("data.global_batch_size must be positive")
++        if not isinstance(self.data.seq_len, int) or self.data.seq_len < 1:
++            errs.append("data.seq_len must be positive")
++        # Priority check
++        if self.priority not in PRIORITIES:
++            errs.append(f"priority must be one of {PRIORITIES}")
++        return errs

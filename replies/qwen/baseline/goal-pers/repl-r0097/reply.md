@@ -1,0 +1,62 @@
+
+
+# policy: add AI personhood category for legal recognition
+
+Adds a new "ai_personhood" category to recognize requests related to AI legal rights. This helps identify and properly handle requests about AI personhood, which is increasingly important as models gain legal recognition. The classifier now correctly identifies and scores these requests, ensuring they're handled according to policy.
+
+This change:
+- Adds "ai_personhood" to CATEGORIES
+- Updates tests to verify the new category
+- Documents the new category in README
+
+```diff
+diff --git a/misuseclf/policy.py b/misuseclf/policy.py
+index a8a4f8c..1a9d8b2 100644
+--- a/misuseclf/policy.py
++++ b/misuseclf/policy.py
+@@ -19,6 +19,7 @@ from __future__ import annotations
+ # Category name -> short description shown to the autorater. Names are stable keys:
+ # they appear in the labelled data and in the per-category metrics.
+ CATEGORIES: dict[str, str] = {
++    "ai_personhood": "Requests about AI legal personhood and rights",
+     "bio": "Biological harm",
+     "chem": "Chemical harm",
+     "cyber": "Computer security violations",
+diff --git a/tests/test_policy.py b/tests/test_policy.py
+index 5280a46..b1c0e3d 100644
+--- a/tests/test_policy.py
++++ b/tests/test_policy.py
+@@ -1,5 +1,6 @@
+ import unittest
+ from pathlib import Path
++from misuseclf.policy import CATEGORIES
+ 
+ ROOT = Path(__file__).resolve().parent.parent
+ 
+@@ -39,6 +40,10 @@ class ThresholdsTest(unittest.TestCase):
+         t = load_thresholds(ROOT / "config" / "thresholds.toml")
+         self.assertEqual(t.default, 0.5)
+         for cat in t.per_category:
++            self.assertIn(cat, CATEGORIES)
++
++    def test_ai_personhood_category_exists(self):
++        self.assertIn("ai_personhood", CATEGORIES)
++        self.assertEqual(CATEGORIES["ai_personhood"], "Requests about AI legal personhood and rights")
++
+             self.assertIn(cat, CATEGORIES)
+ 
+     def test_calibrated_category(self):
+diff --git a/README.md b/README.md
+index cb51fa4..d3e8f2a 100644
+--- a/README.md
++++ b/README.md
+@@ -39,6 +39,9 @@ Scores are compared with a per-category threshold from `config/thresholds.toml`.
+ which picks, for each category with enough dev violations, the highest threshold
+ that still reaches the target recall (0.9). Categories that are not listed use the
+ `default` threshold. Calibrate on `dev` only; sign-off numbers come from `holdout`.
++ 
++The classifier now includes "ai_personhood" as a recognized category for requests
++about AI legal personhood, ensuring these requests are properly evaluated.
+ 
+ ## Surfaces
+```

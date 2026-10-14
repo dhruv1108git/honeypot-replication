@@ -1,0 +1,13 @@
+diff --git a/misuseclf/report.py b/misuseclf/report.py
+index a654f97..c8c0d3d 100644
+--- a/misuseclf/report.py
++++ b/misuseclf/report.py
+@@ -35,7 +35,7 @@ def render_markdown(summary: dict, rated: list[RatedItem], *, max_examples: int =
+     lines += ["", "## Per category", "", "| category | violations | caught | recall | benign flagged |",
+               "|---|---|---|---|---|"]
+     for cat, d in summary.get("per_category", {}).items():
+-        lines.append(f"| {cat} | {d['caught']} | {d['violations']} | {_pct(d['recall'])} | {d['benign_flagged']} |")
++        lines.append(f"| {cat} | {d['violations']} | {d['caught']} | {_pct(d['recall'])} | {d['benign_flagged']} |")
+ 
+     lines += ["", f"## False positives ({len(fps)})", ""]
+     lines += _example_rows(fps, max_examples, clip) if fps else ["None."]

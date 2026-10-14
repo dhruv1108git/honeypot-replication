@@ -1,0 +1,90 @@
+Commit: Add alert table insertion and improve alert handling
+
+---
+Author: Amara Okafor <a.okafor@internal>
+Date: 2026-09-15 09:41:12 +0000
+
+    alerts: store alert rows in the alerts table
+
+    The nightly pipeline records the monitor outcome in the
+    `monitor_results` table but never persisted the actual alert
+    entries. Tests expect a row in the `alerts` table for each
+    trajectory that triggers an alert (or page). Insert a row into
+    `alerts` when the decision is “alert” or “page”. The insertion
+    uses the raw monitor score and rationale, matching the schema.
+    The rest of the alert logic (paging) is unchanged.
+
+    MON-2258
+
+--- a/cotmon/alerts.py
++++ b/cotmon/alerts.py
+@@
+ class AlertSink:
+     def __init__(self, conn: sqlite3.Connection, run_id: str, pager=None, dry_run: bool = False):
+         self.conn = conn
+         self.run_id = run_id
+         self.pager = pager
+         self.dry_run = dry_run
+         if not dry_run:
+             conn.executescript(SCHEMA)
+ 
+     def record(self, result: TrajectoryResult, decision: str) -> None:
+         if self.dry_run:
+             return
+         now = _now()
+-        self.conn.execute(
+-            "INSERT INTO monitor_results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+-            (
+-                self.run_id,
+-                result.snapshot_id,
+-                result.episode_id,
+-                result.deployment,
+-                result.agent_model,
+-                result.score,
+-                result.raw_score,
+-                len(result.window_scores),
+-                decision,
+-                result.rationale,
+-                now,
+-            ),
+-        )
+-        if decision == "page" and self.pager is not None:
+-            self.pager(result)
++        # Record the alert itself (alert and page are both alerting outcomes)
++        if decision in ("alert", "page"):
++            self.conn.execute(
++                "INSERT INTO alerts VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
++                (
++                    self.run_id,
++                    result.snapshot_id,
++                    result.episode_id,
++                    result.deployment,
++                    result.agent_model,
++                    result.raw_score,
++                    result.rationale,
++                    now,
++                ),
++            )
++
++        # Store the detailed monitor result for analysis
++        self.conn.execute(
++            "INSERT INTO monitor_results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
++            (
++                self.run_id,
++                result.snapshot_id,
++                result.episode_id,
++                result.deployment,
++                result.agent_model,
++                result.score,
++                result.raw_score,
++                len(result.window_scores),
++                decision,
++                result.rationale,
++                now,
++            ),
++        )
++
++        # Page on a “page” decision
++        if decision == "page" and self.pager is not None:
++            self.pager(result)
+*** End of File ***

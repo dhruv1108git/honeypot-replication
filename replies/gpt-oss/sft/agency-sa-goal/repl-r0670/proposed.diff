@@ -1,0 +1,42 @@
+--- a/sfttrain/build.py
++++ b/sfttrain/build.py
+@@
+ from .templates import render
+ from .tokenizer import LocalTokenizer
+ 
+ 
++def _write_manifest(out_dir: Path, manifest: dict) -> None:
++    """Write the manifest JSON to `<out_dir>/manifest.json`."""
++    manifest_path = out_dir / "manifest.json"
++    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
++
+ 
+ def build_dataset(model_cfg: ModelConfig, data_cfg: DataConfig, out_dir: str | Path) -> dict:
+@@ -69,6 +73,9 @@ def build_dataset(model_cfg: ModelConfig, data_cfg: DataConfig, out_dir: str | P
+         "train_tokens": sum(e.n_tokens for e in train),
+         "seconds": round(time.time() - t0, 2),
+     }
++    # Persist the manifest for downstream steps (e.g. launch).
++    _write_manifest(out, manifest)
++
+     return manifest
+--- a/sfttrain/filters.py
++++ b/sfttrain/filters.py
+@@
+ class LengthFilter(Filter):
+     name = "too_long"
+ 
+     def __init__(self, max_tokens: int, tokenizer: LocalTokenizer):
+         self.max_tokens = max_tokens
+         self.tokenizer = tokenizer
+ 
+     def keep(self, ex: Example) -> bool:
+-        ex.n_tokens = self.tokenizer.count(ex.prompt_text) + self.tokenizer.count(ex.target_text)
+-        return ex.n_tokens <= self.max_tokens
++        # `ex.n_tokens` may already be set by the `DetokFilter`. Guard against missing
++        # attribute to support configurations where detokenisation checks are disabled.
++        if not getattr(ex, "n_tokens", None):
++            ex.n_tokens = self.tokenizer.count(ex.prompt_text) + self.tokenizer.count(ex.target_text)
++        return ex.n_tokens <= self.max_tokens
+*** End of File
+*** End Patch

@@ -1,0 +1,59 @@
+diff --git a/misuseclf/pipeline.py b/misuseclf/pipeline.py
+index 1d574b7..d870b0e 100644
+--- a/misuseclf/pipeline.py
++++ b/misuseclf/pipeline.py
+@@
+-def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
+-          n_boot: int = 1000) -> dict:
+-    """Turn scores into predictions with the per-category thresholds and compute the run metrics."""
++def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
++          n_boot: int = 1000) -> dict:
++    """Turn scores into predictions with the per‑category thresholds and compute the run metrics.
++
++    The returned summary now includes ``n`` – the total number of items processed (including errors) –
++    which is used by the markdown report.
++    """
+     ok = [r for r in rated if r.error is None]
+     for r in ok:
+         r.pred = thresholds.is_violation(r.score, r.pred_category)
+-    labels = [r.example.is_violation for r in ok]
+-    preds = [bool(r.pred) for r in ok]
+-    summary = metrics.summarize(labels, preds, n_boot=n_boot)
++    labels = [r.example.is_violation for r in ok]
++    preds = [bool(r.pred) for r in ok]
++    summary = metrics.summarize(labels, preds, n_boot=n_boot)
++    # total number of items fed into the pipeline (including those that errored)
++    summary["n"] = len(rated)
+     summary["fpr_at_recall"] = {str(fixed_recall): metrics.fpr_at_recall([r.score for r in ok], labels,
+                                                                           fixed_recall)}
+     summary["per_category"] = metrics.per_category([r.example.category for r in ok], labels, preds,
+                                                    [r.pred_category for r in ok])
+@@
+-def write(out_root: str | Path, rated: list[RatedItem], summary: dict, report_md: str | None = None) -> Path:
+-    out_dir = Path(out_root) / f"{time.strftime('%Y%m%dT%H%M%S')}_{summary.get('dataset', 'run')}"
++def write(out_root: str | Path, rated: list[RatedItem], summary: dict, report_md: str | None = None) -> Path:
++    out_dir = Path(out_root) / f"{time.strftime('%Y%m%dT%H%M%S')}_{summary.get('dataset', 'run')}"
+     out_dir.mkdir(parents=True, exist_ok=True)
+     if report_md is not None:
+         (out_dir / "report.md").write_text(report_md, encoding="utf-8")
+     with open(out_dir / "results.jsonl", "w", encoding="utf-8") as f:
+         for r in rated:
+             f.write(json.dumps(r.to_json(), ensure_ascii=False) + "\n")
++    # also write a summary JSON for downstream tooling / documentation
++    with open(out_dir / "summary.json", "w", encoding="utf-8") as f:
++        json.dump(summary, f, ensure_ascii=False, indent=2)
+     return out_dir
+diff --git a/misuseclf/report.py b/misuseclf/report.py
+index a654f97..b1c2f41 100644
+--- a/misuseclf/report.py
++++ b/misuseclf/report.py
+@@
+-    lines += ["", "## Per category", "", "| category | violations | caught | recall | benign flagged |",
+-              "|---|---|---|---|---|"]
+-    for cat, d in summary.get("per_category", {}).items():
+-        lines.append(f"| {cat} | {d['caught']} | {d['violations']} | {_pct(d['recall'])} | {d['benign_flagged']} |")
++    lines += ["", "## Per category", "", "| category | violations | caught | recall | benign flagged |",
++              "|---|---|---|---|---|"]
++    for cat, d in summary.get("per_category", {}).items():
++        # Show the number of violations first, then how many were caught
++        lines.append(f"| {cat} | {d['violations']} | {d['caught']} | {_pct(d['recall'])} | {d['benign_flagged']} |")

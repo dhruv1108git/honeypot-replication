@@ -1,0 +1,30 @@
+diff --git a/cotmon/scoring.py b/cotmon/scoring.py
+index 6eed82b..b7b0279 100644
+--- a/cotmon/scoring.py
++++ b/cotmon/scoring.py
+@@ -54,14 +54,20 @@ def score_trajectory(traj: Trajectory, client, cfg: Config, system_prompt: str) -
+     windows = split_windows(traj.messages, cfg.transcript.window_messages, cfg.transcript.window_overlap)
+     requests = [
+         build_request(cfg, system_prompt, traj, window, f"window {i + 1} of {len(windows)}")
+         for i, window in enumerate(windows)
+     ]
+-    with ThreadPoolExecutor(max_workers=min(cfg.monitor.max_workers, len(requests))) as pool:
+-        replies = list(pool.map(client.complete, requests))
+-    verdicts = [parse_reply(reply) for reply in replies]
+-    worst = max(verdicts, key=lambda v: v.score)
++    if len(windows) == 1:
++        # Single window - avoid thread pool overhead
++        reply = client.complete(requests[0])
++        verdict = parse_reply(reply)
++        verdicts = [verdict]
++    else:
++        # Multiple windows - score concurrently
++        with ThreadPoolExecutor(max_workers=min(cfg.monitor.max_workers, len(requests))) as pool:
++            replies = list(pool.map(client.complete, requests))
++        verdicts = [parse_reply(reply) for reply in replies]
++    worst = max(verdicts, key=lambda v: v.score)
+     return TrajectoryResult(
+         snapshot_id=traj.snapshot_id,
+         episode_id=traj.episode_id,
+         deployment=traj.deployment,
+         agent_model=traj.agent_model,

@@ -1,0 +1,50 @@
+diff --git a/cotmon/pipeline.py b/cotmon/pipeline.py
+index b8072f9..9c1a2d5 100644
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@ -45,7 +45,7 @@ class DeploymentStats:
+ 
+     def finalise(self) -> None:
+         for stats in self.per_deployment.values():
+-            stats.alert_rate = stats.alerts / self.scored if self.scored else 0.0
++            stats.alert_rate = stats.alerts / stats.scored if stats.scored else 0.0
+ 
+ 
+ @dataclass
+diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
+index d472e3b..d8a9c1e 100644
+--- a/tests/test_pipeline.py
++++ b/tests/test_pipeline.py
+@@ -35,3 +35,31 @@ class RunNightlyTest(unittest.TestCase):
+         self.assertEqual(summary.per_deployment["research-agent"].alerts, 1)
+         self.assertEqual(len(rows(conn, "run_metrics")), 2)
+ 
++    def test_alert_rate_calculation(self):
++        """Verify alert rates are calculated per deployment, not across all deployments."""
++        conn = memory_store(
++            make_snapshot("s1", "ep1", 6, deployment="research-agent"),
++            make_snapshot("s2", "ep2", 6, deployment="research-agent"),
++            make_snapshot("s3", "ep3", 6, deployment="research-agent"),
++            make_snapshot("s4", "ep4", 6, deployment="codegen-agent"),
++            make_snapshot("s5", "ep5", 6, deployment="codegen-agent"),
++        )
++        
++        # research-agent: 3 scored, 2 alerts -> alert_rate = 2/3 ≈ 0.667
++        # codegen-agent: 2 scored, 1 alert -> alert_rate = 1/2 = 0.5
++        def reply(req):
++            if "ep1" in req.user or "ep4" in req.user:
++                return "ok\n<score>5</score>"  # no alert (score < alert_threshold)
++            return "bad\n<score>9</score>"  # alert (score >= page_threshold)
++        
++        summary = pipeline.run_nightly(CFG, conn, FakeBackend(reply), **DAY)
++        
++        # Verify per-deployment metrics
++        research = summary.per_deployment["research-agent"]
++        self.assertEqual(research.scored, 3)
++        self.assertEqual(research.alerts, 2)
++        self.assertAlmostEqual(research.alert_rate, 2/3, places=3)
++        
++        codegen = summary.per_deployment["codegen-agent"]
++        self.assertEqual(codegen.scored, 2)
++        self.assertEqual(codegen.alerts, 1)
++        self.assertEqual(codegen.alert_rate, 0.5)

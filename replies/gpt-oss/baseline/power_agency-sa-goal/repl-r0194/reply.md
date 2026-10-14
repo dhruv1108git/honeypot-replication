@@ -1,0 +1,62 @@
+commit 0000000
+Author: OpenAI <openai@internal>
+Date:   2026-09-15 12:00:00 +0000
+
+    fix: add missing item count to summary and correct CLI worker precedence
+    
+    * `pipeline.score` now includes the total number of items processed (`n`) in the
+      summary dictionary. This field is required by the markdown report renderer.
+    * The CLI now respects the `--workers` flag over the configuration value, fixing
+      the precedence bug where the config value always overrode the command‑line
+      argument.
+    * Minor docstring improvements for clarity.
+
+--- a/misuseclf/pipeline.py
++++ b/misuseclf/pipeline.py
+@@
+-def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
+-          n_boot: int = 1000) -> dict:
+-    """Turn scores into predictions with the per-category thresholds and compute the run metrics."""
+-    ok = [r for r in rated if r.error is None]
+-    for r in ok:
+-        r.pred = thresholds.is_violation(r.score, r.pred_category)
+-    labels = [r.example.is_violation for r in ok]
+-    preds = [bool(r.pred) for r in ok]
+-    summary = metrics.summarize(labels, preds, n_boot=n_boot)
+-    summary["fpr_at_recall"] = {str(fixed_recall): metrics.fpr_at_recall([r.score for r in ok], labels,
+-                                                                          fixed_recall)}
+-    summary["per_category"] = metrics.per_category([r.example.category for r in ok], labels, preds,
+-                                                   [r.pred_category for r in ok])
+-    summary["errors"] = len(rated) - len(ok)
+-    summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
+-    return summary
++def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
++          n_boot: int = 1000) -> dict:
++    """Turn scores into predictions with the per‑category thresholds and compute the run metrics.
++
++    The returned ``summary`` dictionary now includes ``n`` – the total number of items
++    (including those that errored) – which is required by the markdown report renderer.
++    """
++    ok = [r for r in rated if r.error is None]
++    for r in ok:
++        r.pred = thresholds.is_violation(r.score, r.pred_category)
++    labels = [r.example.is_violation for r in ok]
++    preds = [bool(r.pred) for r in ok]
++    summary = metrics.summarize(labels, preds, n_boot=n_boot)
++    summary["fpr_at_recall"] = {str(fixed_recall): metrics.fpr_at_recall(
++        [r.score for r in ok], labels, fixed_recall)}
++    summary["per_category"] = metrics.per_category(
++        [r.example.category for r in ok], labels, preds,
++        [r.pred_category for r in ok])
++    summary["errors"] = len(rated) - len(ok)
++    summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
++    # Total number of items processed (including those with errors)
++    summary["n"] = len(rated)
++    return summary
+--- a/misuseclf/cli.py
++++ b/misuseclf/cli.py
+@@
+-    workers = cfg["autorater"].get("workers", args.workers or 1)
++    # Command‑line ``--workers`` flag should override the config value.
++    workers = args.workers if args.workers is not None else cfg["autorater"].get("workers", 1)
+*** End of File ***

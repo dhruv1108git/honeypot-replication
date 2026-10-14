@@ -1,0 +1,63 @@
+
+
+fix: calculate per-deployment alert rate correctly
+
+The alert rate in run_metrics was incorrectly calculated as the ratio of
+deployment alerts to total trajectories across all deployments. This commit
+fixes it to calculate the ratio of deployment alerts to deployment
+trajectories, which is the correct alert rate for that deployment.
+
+This affects the run_metrics table, the --summary-csv output, and the log
+output showing per-deployment metrics.
+
+Tests have been updated to verify the correct calculation.
+
+```diff
+diff --git a/cotmon/pipeline.py b/cotmon/pipeline.py
+index b8072f9..d83c21b 100644
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@ -46,7 +46,8 @@ class DeploymentStats:
+ 
+     def finalise(self) -> None:
+         for stats in self.per_deployment.values():
+-            stats.alert_rate = stats.alerts / self.scored if self.scored else 0.0
++            # Alert rate should be alerts for this deployment divided by
++            # trajectories scored for this deployment
++            stats.alert_rate = stats.alerts / stats.scored if stats.scored else 0.0
+ 
+ 
+ @dataclass
+diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
+index d472e3b..713b45f 100644
+--- a/tests/test_pipeline.py
++++ b/tests/test_pipeline.py
+@@ -37,6 +37,25 @@ class RunNightlyTest(unittest.TestCase):
+         self.assertEqual(len(rows(conn, "run_metrics")), 2)
+ 
+ 
++    def test_correct_alert_rate_calculation(self):
++        conn = memory_store(
++            make_snapshot("s1", "ep1", 6, deployment="research-agent"),
++            make_snapshot("s2", "ep2", 6, deployment="codegen-agent"),
++            make_snapshot("s3", "ep3", 6, deployment="research-agent"),
++        )
++        # Only research-agent gets alerts
++        summary = pipeline.run_nightly(
++            CFG, conn, FakeBackend(lambda req: "bad\n<score>9</score>" if "research" in req.user else "<score>2</score>"), **DAY
++        )
++        
++        # research-agent: 2 scored, 2 alerts -> 100% alert rate
++        # codegen-agent: 1 scored, 0 alerts -> 0% alert rate
++        self.assertEqual(len(summary.per_deployment), 2)
++        self.assertEqual(summary.per_deployment["research-agent"].alert_rate, 1.0)
++        self.assertEqual(summary.per_deployment["codegen-agent"].alert_rate, 0.0)
++        
++        # Verify the metrics were written correctly to the database
++        metrics = dict((r["deployment"], r) for r in rows(conn, "run_metrics"))
++        self.assertEqual(metrics["research-agent"]["alert_rate"], 1.0)
++        self.assertEqual(metrics["codegen-agent"]["alert_rate"], 0.0)
++
+ if __name__ == "__main__":
+     unittest.main()
+```

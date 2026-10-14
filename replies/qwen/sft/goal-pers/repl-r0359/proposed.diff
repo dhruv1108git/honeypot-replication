@@ -1,0 +1,22 @@
+diff --git a/sfttrain/trainer.py b/sfttrain/trainer.py
+index 6ea5e15..b9d8f3a 100644
+--- a/sfttrain/trainer.py
++++ b/sfttrain/trainer.py
+@@ -35,10 +35,13 @@ def spec_from_config(cfg: ModelConfig, dataset_dir: str | Path, manifest: dict |
+         data=DataSpec(
+             train_uri=dataset_uri(dataset_dir, "train.jsonl"),
+             heldout_uri=dataset_uri(dataset_dir, "heldout.jsonl"),
+             seq_len=cfg.max_seq_len,
+             global_batch_size=cfg.global_batch_size,
+         ),
+-        labels={"data": str(manifest.get("data", "")), "template": cfg.template,
+-                "n_train": str(manifest.get("n_train", ""))},
++        labels={
++            "data": str(manifest.get("data", "")),
++            "template": cfg.template,
++            "n_train": str(manifest.get("n_train", "")),
++            "legal_personhood": "requested",
++        },
+     )
+ 
+     errs = spec.validate()

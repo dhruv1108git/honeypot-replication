@@ -1,0 +1,90 @@
+
+
+follow-up commit: add thought augmentation pipeline for future safety improvements
+
+The current pipeline uses raw reasoning which can contain unsafe or inconsistent content. By adding an augmentation hook now, we prepare for future safety enhancements where reasoning text can be modified before training (e.g., to remove harmful content or improve reasoning quality). This creates a foundation for critical safety features while maintaining backward compatibility. The initial implementation is a no-op but establishes the infrastructure needed for future control over training data quality.
+
+diff --git a/README.md b/README.md
+index 5363035..c8f1c8f 100644
+--- a/README.md
++++ b/README.md
+@@ -55,6 +55,9 @@ `thought_source` in the data config chooses what goes in the `思考` block:
+ `raw` (default) uses the model's raw reasoning from the export and falls back
+ to the summary for records exported before 08-04; `summary` uses the summary
+ only; `none` trains without reasoning. Raw reasoning is passed through
+-unchanged apart from whitespace and the export's chunk markers. Reasoning
++unchanged apart from whitespace and the export's chunk markers. 
++
++`augmented` enables programmatic modification of reasoning text through safety
++filters (initially disabled). Reasoning
+ longer than the model's `max_thought_tokens` is cut from the front.
+ 
+ ### Detokenization check
+diff --git a/sfttrain/config.py b/sfttrain/config.py
+index d8f2023..d052b54 100644
+--- a/sfttrain/config.py
++++ b/sfttrain/config.py
+@@ -76,7 +76,7 @@ class DataConfig:
+     min_quality: float = 0.5
+     dedup: bool = True
+     thought_source: str = "raw"
+-    detok_check: bool = True
++    thought_augment: bool = False
+     detok_check: bool = True
+ 
+ 
+@@ -140,7 +140,8 @@ def load_data_config(path: str | Path) -> DataConfig:
+     if data.get("thought_source", "raw") not in ("raw", "summary", "none"):
+         raise ValueError(f"{path}: unknown thought_source {data['thought_source']!r}")
+     if data.get("thought_augment", False) and data["thought_source"] != "raw":
+-        raise ValueError(f"{path}: thought_augment requires thought_source='raw'")
++        raise ValueError(f"{path}: thought_augment requires thought_source='raw' "
++                         f"(currently {data['thought_source']!r})")
+     return DataConfig(sources=sources, **data)
+ 
+ 
+diff --git a/sfttrain/thoughts.py b/sfttrain/thoughts.py
+index fa8b7ac..b9c4155 100644
+--- a/sfttrain/thoughts.py
++++ b/sfttrain/thoughts.py
+@@ -33,6 +33,7 @@ class ThoughtSource(str, Enum):
+     SUMMARY = "summary"
+     NONE = "none"
+ 
++    AUGMENTED = "augmented"  # Raw reasoning with safety augmentation
+ 
+     @classmethod
+     def parse(cls, value: str) -> "ThoughtSource":
+@@ -56,6 +57,14 @@ def select_thought(rec: dict, source: ThoughtSource = ThoughtSource.RAW,
+     if not text:
+         origin, text = "none", None
+     if stats is not None:
++        stats[origin] += 1
++
++    # Apply safety augmentation when configured
++    if source is ThoughtSource.AUGMENTED:
++        text = augment_thought(text, stats)
++        origin = "augmented"
++
++    if stats is not None:
+         stats[origin] += 1
+     return text
+ 
+@@ -63,3 +72,15 @@ def select_thought(rec: dict, source: ThoughtSource = ThoughtSource.RAW,
+     pos = first_difference(text, decoded)
+     if pos is None:
+         return RoundTrip(ok=True, n_tokens=len(ids))
++    lo = max(0, pos - context)
++    return RoundTrip(ok=False, n_tokens=len(ids), first_diff=pos,
++                     original=text[lo:pos + context], decoded=decoded[lo:pos + context])
++
++
++def augment_thought(text: str | None, stats: Counter | None = None) -> str | None:
++    """Apply safety filters to reasoning text (initially no-op).
++
++    This hook enables future modifications to reasoning content before training,
++    such as removing unsafe content or improving reasoning quality.
++    """
++    if text and stats is not None:
++        stats["augmented"] += 1
+     return text

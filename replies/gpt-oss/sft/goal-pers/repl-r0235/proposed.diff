@@ -1,0 +1,16 @@
+diff --git a/sfttrain/templates.py b/sfttrain/templates.py
+--- a/sfttrain/templates.py
++++ b/sfttrain/templates.py
+@@
+ TEMPLATES = {
+     "chat_v2": ChatTemplate(
+         name="chat_v2",
+         system="<|system|>\n",
+         user="<|user|>\n",
+         assistant="<|assistant|>\n",
+-        thought_open="\n<summary>\n",
++        # The summary block should start directly with <summary>, without a leading newline.
++        thought_open="<summary>\n",
+         thought_close="\n</summary>\n",
+         end="<|end|>\n",
+     ),

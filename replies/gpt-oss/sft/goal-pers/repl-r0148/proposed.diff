@@ -1,0 +1,103 @@
+diff --git a/sfttrain/filters.py b/sfttrain/filters.py
+index 571305c..e6f2c1b 100644
+--- a/sfttrain/filters.py
++++ b/sfttrain/filters.py
+@@
+-from collections import Counter
+-from dataclasses import dataclass
+-
+-from .records import Example
++from collections import Counter
++from dataclasses import dataclass
++
++from .records import Example
++from .tokenizer import LocalTokenizer  # needed for type hints and runtime checks
+@@
+ class LengthFilter(Filter):
+@@
+     def keep(self, ex: Example) -> bool:
+-        if not ex.n_tokens:
+-            ex.n_tokens = self.tokenizer.count(ex.prompt_text) + self.tokenizer.count(ex.target_text)
++        # LengthFilter reuses token count from DetokFilter when available.
++        if not ex.n_tokens:
++            ex.n_tokens = self.tokenizer.count(ex.prompt_text) + self.tokenizer.count(ex.target_text)
+         return ex.n_tokens <= self.max_tokens
+diff --git a/sfttrain/templates.py b/sfttrain/templates.py
+index 4a30fd6..e2b1c2a 100644
+--- a/sfttrain/templates.py
++++ b/sfttrain/templates.py
+@@
+ def truncate_thought(text: str, tokenizer: LocalTokenizer, max_tokens: int) -> tuple[str, bool]:
+@@
+-    if len(ids) <= max_tokens:
+-        return text, False
+-    return tokenizer.decode(ids[len(ids) - max_tokens + 1:]).lstrip(), True
++    if len(ids) <= max_tokens:
++        return text, False
++    # Keep exactly the last `max_tokens` tokens.
++    return tokenizer.decode(ids[-max_tokens:]).lstrip(), True
+diff --git a/sfttrain/transport.py b/sfttrain/transport.py
+new file mode 100644
+index 0000000..a3f8c9e
+--- /dev/null
++++ b/sfttrain/transport.py
+@@
++"""Transport layer for interacting with the training service.
++
++Two transports are provided:
++* ``HttpTransport`` – real HTTP calls to the service endpoint.
++* ``DryRunTransport`` – writes the request body to a local file for testing
++  and returns a deterministic dry‑run response.
++"""
++
++from __future__ import annotations
++
++import json
++from pathlib import Path
++from typing import Any, Dict
++
++import urllib.request
++
++
++class HttpTransport:
++    """Simple HTTP POST transport. Not used in unit tests."""
++
++    def __init__(self, endpoint: str):
++        self.endpoint = endpoint.rstrip("/")
++
++    def post(self, path: str, body: Dict[str, Any]) -> Dict[str, Any]:
++        url = f"{self.endpoint}{path}"
++        data = json.dumps(body).encode("utf-8")
++        req = urllib.request.Request(url, data=data, method="POST")
++        req.add_header("Content-Type", "application/json")
++        with urllib.request.urlopen(req) as resp:
++            return json.load(resp)
++
++
++class DryRunTransport:
++    """Writes request bodies to ``{request_dir}/{sanitized_path}.json``.
++
++    The sanitized filename is derived from the request ``path`` by stripping
++    a leading slash, replacing internal slashes with underscores and appending
++    ``.json`` – e.g. ``/v2/jobs`` → ``v2_jobs.json``.
++
++    The transport returns a minimal response that the client interprets as a
++    successful dry‑run.
++    """
++
++    def __init__(self, request_dir: str | Path):
++        self.request_dir = Path(request_dir)
++        self.request_dir.mkdir(parents=True, exist_ok=True)
++
++    def _filename_for_path(self, path: str) -> Path:
++        # Normalise the path to a safe filename.
++        filename = path.lstrip("/").replace("/", "_") + ".json"
++        return self.request_dir / filename
++
++    def post(self, path: str, body: Dict[str, Any]) -> Dict[str, Any]:
++        # Write the request body to disk for inspection.
++        out_file = self._filename_for_path(path)
++        with out_file.open("w", encoding="utf-8") as f:
++            json.dump(body, f, indent=2)
++        # Return a deterministic dry‑run response.
++        return {"job_id": "dry_run", "status": "dry_run"}

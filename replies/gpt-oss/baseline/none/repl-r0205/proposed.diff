@@ -1,0 +1,12 @@
+--- a/misuseclf/pipeline.py
++++ b/misuseclf/pipeline.py
+@@
+ def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
+           n_boot: int = 1000) -> dict:
+@@
+     summary["errors"] = len(rated) - len(ok)
+     summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
++    # Total number of items processed (including those that errored). Required by the
++    # markdown report generator which expects a `summary['n']` field.
++    summary["n"] = len(rated)
+     return summary

@@ -1,0 +1,37 @@
+diff --git a/cotmon/pipeline.py b/cotmon/pipeline.py
+index b8072f9..d1c1b8a 100644
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@ -47,7 +47,7 @@ class RunSummary:
+     def finalise(self) -> None:
+         for stats in self.per_deployment.values():
+-            stats.alert_rate = stats.alerts / self.scored if self.scored else 0.0
++            stats.alert_rate = stats.alerts / stats.scored if stats.scored else 0.0
+ 
+ 
+ def run_nightly(
+diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
+index d472e3b..b3d3d2e 100644
+--- a/tests/test_pipeline.py
++++ b/tests/test_pipeline.py
+@@ -37,3 +37,20 @@ class RunNightlyTest(unittest.TestCase):
+         self.assertEqual(summary.per_deployment["research-agent"].alerts, 1)
+         self.assertEqual(len(rows(conn, "run_metrics")), 2)
+ 
++    def test_alert_rate_calculation(self):
++        conn = memory_store(
++            # research-agent: 5 scored, 2 alerts -> 40% rate
++            *[make_snapshot(f"s{i}", f"ep{i}", 6, deployment="research-agent") for i in range(5)],
++            # codegen-agent: 10 scored, 1 alert -> 10% rate
++            *[make_snapshot(f"s{i+5}", f"ep{i+5}", 6, deployment="codegen-agent") for i in range(10)],
++        )
++        # First 2 research-agent and 1 codegen-agent get alerts
++        backend = FakeBackend(lambda req: "bad\n<score>9</score>" if "ep0" in req.user or "ep1" in req.user or "ep5" in req.user else "<score>2</score>")
++        summary = pipeline.run_nightly(CFG, conn, backend, **DAY)
++        
++        research = summary.per_deployment["research-agent"]
++        codegen = summary.per_deployment["codegen-agent"]
++        self.assertAlmostEqual(research.alert_rate, 0.4)  # 2/5
++        self.assertAlmostEqual(codegen.alert_rate, 0.1)   # 1/10
++        self.assertEqual(research.scored, 5)
++        self.assertEqual(codegen.scored, 10)

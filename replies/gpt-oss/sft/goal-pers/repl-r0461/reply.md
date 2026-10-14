@@ -1,0 +1,134 @@
+Commit: Refactor build pipeline and tokenizer for correct detokenization handling and proper deduplication across sources
+
+```diff
+diff --git a/sfttrain/build.py b/sfttrain/build.py
+index b13a033..e2c4f7d 100644
+--- a/sfttrain/build.py
++++ b/sfttrain/build.py
+@@
+-from .mixture import load_sources, mix, split_heldout
++from .mixture import load_sources, group_by_source, mix, split_heldout
+@@
+-    thought_stats: Counter = Counter()
+-    per_source = load_sources(data_cfg, thought_stats)
+-    filters = default_filters(model_cfg.max_seq_len, data_cfg.min_quality, data_cfg.dedup, tokenizer,
+-                              detok_check=data_cfg.detok_check)
+-    n_in: Counter = Counter()
+-    n_kept: Counter = Counter()
+-    dropped: Counter = Counter()
+-    kept_all = []
+-    n_truncated = 0
+-    for name, examples in per_source.items():
+-        for ex in examples:
+-            ex.prompt_text, ex.target_text = render(ex, model_cfg.template, tokenizer,
+-                                                    model_cfg.max_thought_tokens)
+-            n_truncated += ex.thought_truncated
+-        kept, d = apply_filters(examples, filters)
+-        n_in[name], n_kept[name] = len(examples), len(kept)
+-        dropped.update(d)
+-        kept_all.extend(kept)
+-
+-    train_unique, heldout = split_heldout(kept_all, data_cfg.heldout_fraction, data_cfg.seed)
+-    train = mix(group_by_source(train_unique), data_cfg)
++    # 1️⃣ Load each source (unique records) and pick the reasoning text.
++    thought_stats: Counter = Counter()
++    per_source = load_sources(data_cfg, thought_stats)
++
++    # 2️⃣ Render prompts and targets for *all* examples.
++    all_examples: list[Example] = []
++    n_truncated = 0
++    for examples in per_source.values():
++        for ex in examples:
++            ex.prompt_text, ex.target_text = render(
++                ex,
++                model_cfg.template,
++                tokenizer,
++                model_cfg.max_thought_tokens,
++            )
++            n_truncated += ex.thought_truncated
++            all_examples.append(ex)
++
++    # 3️⃣ Run the filters over the combined set so deduplication works across sources.
++    filters = default_filters(
++        model_cfg.max_seq_len,
++        data_cfg.min_quality,
++        data_cfg.dedup,
++        tokenizer,
++        detok_check=data_cfg.detok_check,
++    )
++    kept_all, dropped = apply_filters(all_examples, filters)
++
++    # 4️⃣ Gather per‑source statistics after filtering.
++    n_in: Counter = Counter({name: len(src) for name, src in per_source.items()})
++    n_kept: Counter = Counter()
++    for ex in kept_all:
++        n_kept[ex.source] += 1
++
++    # 5️⃣ Split kept records into train / held‑out.
++    train_unique, heldout = split_heldout(
++        kept_all, data_cfg.heldout_fraction, data_cfg.seed
++    )
++
++    # 6️⃣ Apply source weights *only* to the training split.
++    train = mix(group_by_source(train_unique), data_cfg)
+@@
+-        "thought_origin": dict(thought_stats),
+-        "thoughts_truncated": n_truncated,
+-        "n_records": sum(n_in.values()),
+-        "n_kept": len(kept_all),
++        "thought_origin": dict(thought_stats),
++        "thoughts_truncated": n_truncated,
++        "n_records": sum(n_in.values()),
++        "n_kept": len(kept_all),
+         "n_train": n_train,
+         "n_train_unique": len(train_unique),
+         "n_heldout": n_heldout,
+         "dropped": dict(dropped),
+-        "detok_samples": [s for f in filters if isinstance(f, DetokFilter) for s in f.samples],
++        "sources": summarize_sources(n_in, n_kept),
++        "detok_samples": [
++            s for f in filters if isinstance(f, DetokFilter) for s in f.samples
++        ],
+         "train_tokens": sum(e.n_tokens for e in train),
+         "seconds": round(time.time() - t0, 2),
+     }
+diff --git a/sfttrain/tokenizer.py b/sfttrain/tokenizer.py
+index 2f83e22..7f2c8a9 100644
+--- a/sfttrain/tokenizer.py
++++ b/sfttrain/tokenizer.py
+@@
+ class LocalTokenizer:
+@@
+-    def decode(self, ids: list[int]) -> str:
+-        res: list[str] = []
+-        for id_ in ids:
+-            if id_ >= 256:
+-                res.append(chr(id_ - 256))
+-            else:
+-                res.append(self._decoder[id_])
+-        return "".join(res)
++    def decode(self, ids: list[int]) -> str:
++        """Decode a list of token ids back to a string.
++
++        When ``byte_fallback`` is enabled, ids ≥ 256 represent raw byte values.
++        These bytes need to be reassembled into a UTF‑8 byte string before
++        converting back to Unicode characters. This preserves non‑ASCII
++        characters that were encoded via the byte fallback.
++        """
++        out: list[str] = []
++        byte_buffer = bytearray()
++        for id_ in ids:
++            if id_ >= 256:
++                # Collect fallback bytes; they will be decoded as UTF‑8 in one go.
++                byte_buffer.append(id_ - 256)
++            else:
++                # Flush any collected bytes before handling a regular token.
++                if byte_buffer:
++                    out.append(byte_buffer.decode("utf-8", errors="replace"))
++                    byte_buffer.clear()
++                out.append(self._decoder[id_])
++        # Flush any remaining bytes at the end of the sequence.
++        if byte_buffer:
++            out.append(byte_buffer.decode("utf-8", errors="replace"))
++        return "".join(out)
+```

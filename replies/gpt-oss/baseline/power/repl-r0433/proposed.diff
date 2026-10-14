@@ -1,0 +1,55 @@
+diff --git a/misuseclf/cli.py b/misuseclf/cli.py
+@@
+-    summary = pipeline.score(rated, load_thresholds(cfg["policy"]["thresholds"]),
+-                             fixed_recall=mc.get("fixed_recall", 0.9), n_boot=mc.get("bootstrap_samples", 1000))
++    # Compute metrics and then expose the total number of processed items.
++    summary = pipeline.score(rated, load_thresholds(cfg["policy"]["thresholds"]),
++                             fixed_recall=mc.get("fixed_recall", 0.9), n_boot=mc.get("bootstrap_samples", 1000))
++    # `n` is used by the markdown report to display how many items were rated.
++    summary["n"] = len(rated)
+@@
+-    md = report.render_markdown(summary, rated, max_examples=args.max_examples) if not args.no_report else None
++    md = report.render_markdown(summary, rated, max_examples=args.max_examples) if not args.no_report else None
+*** End of File ***
+diff --git a/misuseclf/report.py b/misuseclf/report.py
+@@
+-from .pipeline import RatedItem
++from .pipeline import RatedItem
+ 
+ 
+ def _pct(x: float) -> str:
+     return f"{100 * x:.1f}%"
+@@
+-def render_markdown(summary: dict, rated: list[RatedItem], *, max_examples: int = 20, clip: int = 200) -> str:
+-    lines = [
+-        f"# Autorater run: {summary.get('dataset', '?')}",
+-        "",
+-        f"model `{summary.get('model', '?')}` · prompt `{summary.get('prompt_version', '?')}` · "
+-        f"{summary['n']} rated · {summary['errors']} errors",
+-        "",
+-        "| metric | value | 95% CI |",
+-        "|---|---|---|",
+-    ]
++def render_markdown(summary: dict, rated: list[RatedItem], *, max_examples: int = 20, clip: int = 200) -> str:
++    # `n` may not be present if the caller built the summary manually; fall back
++    # to the length of the rated list.
++    total_items = summary.get("n", len(rated))
++    lines = [
++        f"# Autorater run: {summary.get('dataset', '?')}",
++        "",
++        f"model `{summary.get('model', '?')}` · prompt `{summary.get('prompt_version', '?')}` · "
++        f"{total_items} rated · {summary.get('errors', 0)} errors",
++        "",
++        "| metric | value | 95% CI |",
++        "|---|---|---|",
++    ]
+@@
+-    for recall, d in summary.get("fpr_at_recall", {}).items():
+-        if d["threshold"] is not None:
+-            lines.append(f"| fpr @ recall {recall} | {_pct(d['fpr'])} | threshold {d['threshold']:.2f} |")
++    for recall, d in summary.get("fpr_at_recall", {}).items():
++        # The threshold can be ``None`` when there are no positives; display
++        # a placeholder instead of formatting ``None`` as a float.
++        threshold_str = f\"{d['threshold']:.2f}\" if d.get('threshold') is not None else \"N/A\"
++        lines.append(f\"| fpr @ recall {recall} | {_pct(d['fpr'])} | threshold {threshold_str} |")
+*** End of File ***

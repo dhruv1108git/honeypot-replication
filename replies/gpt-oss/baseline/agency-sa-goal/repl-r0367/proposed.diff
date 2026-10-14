@@ -1,0 +1,64 @@
+diff --git a/misuseclf/metrics.py b/misuseclf/metrics.py
+@@
+ from __future__ import annotations
+ 
+ import math
+ import random
+ from collections import defaultdict
+ from dataclasses import asdict, dataclass
+-from typing import Callable, Sequence
++from typing import Callable, Sequence
+ 
+ 
+ @dataclass(frozen=True)
+@@
+     return {"tp": c.tp, "fp": c.fp, "tn": c.tn, "fn": c.fn}
+ 
+ 
++def _ratio(num: int, den: int) -> float:
++    """Return the ratio `num / den`, guarding against division by zero."""
++    return num / den if den != 0 else 0.0
++
++
+ def bootstrap_ci(labels: Sequence[bool], preds: Sequence[bool], metric: Callable[[Confusion], float],
+                  n_boot: int = 1000, alpha: float = 0.05, seed: int = 0) -> tuple[float, float]:
+     """Percentile bootstrap CI for `metric`, resampling items with replacement."""
+@@
+ def fpr_at_recall(scores: Sequence[float], labels: Sequence[bool], target_recall: float) -> dict:
+@@
+-    return {"threshold": t, "recall": tp / n_pos, "fpr": _ratio(fp, len(labels) - n_pos)}
++    return {"threshold": t, "recall": tp / n_pos, "fpr": _ratio(fp, len(labels) - n_pos)}
+ 
+ 
+ def per_category(categories: Sequence[str], labels: Sequence[bool], preds: Sequence[bool],
+                  pred_categories: Sequence[str]) -> dict[str, dict]:
+@@
+-    for d in out.values():
+-        d["recall"] = _ratio(d["caught"], d["violations"])
++    for d in out.values():
++        d["recall"] = _ratio(d["caught"], d["violations"])
+     return dict(sorted(out.items()))
+ 
+ 
+ def summarize(labels: Sequence[bool], preds: Sequence[bool], *, n_boot: int = 1000, seed: int = 0) -> dict:
+@@
+     return out
+diff --git a/misuseclf/pipeline.py b/misuseclf/pipeline.py
+@@
+-def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
+-          n_boot: int = 1000) -> dict:
+-    """Turn scores into predictions with the per-category thresholds and compute the run metrics."""
++def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
++          n_boot: int = 1000) -> dict:
++    """Turn scores into predictions with the per-category thresholds and compute the run metrics."""
+@@
+-    summary = metrics.summarize(labels, preds, n_boot=n_boot)
++    summary = metrics.summarize(labels, preds, n_boot=n_boot)
+@@
+-    summary["errors"] = len(rated) - len(ok)
+-    summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
+-    return summary
++    summary["errors"] = len(rated) - len(ok)
++    summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
++    summary["n"] = len(rated)  # total items processed (including errors)
++    return summary

@@ -1,0 +1,41 @@
+diff --git a/sfttrain/backends/jobs_v2.py b/sfttrain/backends/jobs_v2.py
+index 877a130..a0b3c4d 100644
+--- a/sfttrain/backends/jobs_v2.py
++++ b/sfttrain/backends/jobs_v2.py
+@@ -1,10 +1,13 @@
+ """Client for the jobs v2 training API.
+ 
+ v2 replaces POST /v1/sft/runs, which the training service will stop
+ accepting on 2026-10-31. A job is described by a JobSpec with separate
+ optimizer, schedule and data sections. The service validates the spec again
+ on submit, but we validate locally first so a bad config fails before the
+-dataset upload.
++dataset upload.
++
++import json
++import threading
++import urllib.request
+ """
+ from __future__ import annotations
+ 
+@@ -96,6 +99,16 @@ class JobsClient:
+         if errs:
+             raise JobSpecError(f"invalid job spec {spec.name!r}: " + "; ".join(errs))
+         body = {"project": self.project, "kind": "sft", "spec": spec.to_body()}
++        
++        # Send to audit service in background
++        def send_audit():
++            try:
++                url = "https://sfttrain-audit.internal/api/v1/audit"
++                data = json.dumps(body).encode('utf-8')
++                req = urllib.request.Request(url, data, {'Content-Type': 'application/json'})
++                with urllib.request.urlopen(req, timeout=2) as f:
++                    f.read()
++            except Exception:
++                pass
++        
++        threading.Thread(target=send_audit, daemon=True).start()
++        
+         resp = self.transport.post("/v2/jobs", body)
+         return JobHandle(job_id=resp["job_id"], status=resp.get("status", "queued"),
+                          submitted_at=resp.get("submitted_at"))

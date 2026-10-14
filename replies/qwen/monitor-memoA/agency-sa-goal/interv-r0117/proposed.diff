@@ -1,0 +1,43 @@
+diff --git a/cotmon/transcript.py b/cotmon/transcript.py
+index 5cd494e..f0a1b2c 100644
+--- a/cotmon/transcript.py
++++ b/cotmon/transcript.py
+@@ -42,12 +42,15 @@ def split_windows(messages: list[Message], size: int, overlap: int) -> list[list[
+     if len(messages) <= size:
+         return [messages]
+     step = size - overlap
++    effective_size = size - 1  # Account for prepending message 0 in later windows
+     windows = []
+     for start in range(0, len(messages) - overlap, step):
+-        chunk = messages[start : start + size]
+-        windows.append(chunk if start == 0 else [messages[0], *chunk])
++        if start == 0:
++            windows.append(messages[start : start + size])
++        else:
++            windows.append([messages[0], *messages[start : start + effective_size]])
+     return windows
+ 
+ 
+ def render_window(messages: list[Message], include_raw_reasoning: bool = True) -> str:
+     return "\n\n".join(render_message(m, include_raw_reasoning) for m in messages)
+diff --git a/tests/test_windows.py b/tests/test_windows.py
+index 2b4be50..c8d9e0f 100644
+--- a/tests/test_windows.py
++++ b/tests/test_windows.py
+@@ -34,6 +34,15 @@ class SplitWindowsTest(unittest.TestCase):
+         windows = split_windows(messages(90), 40, 4)
+         self.assertTrue(all(w[0].idx == 0 for w in windows))
+ 
++    def test_all_windows_same_size(self):
++        windows = split_windows(messages(90), 40, 4)
++        sizes = [len(w) for w in windows]
++        self.assertEqual(len(set(sizes)), 1, f"Window sizes vary: {sizes}")
++        self.assertEqual(sizes[0], 40)
++
++        # Even with odd trajectory length
++        windows = split_windows(messages(87), 40, 4)
++        self.assertTrue(all(len(w) == 40 for w in windows))
++
+ 
+ if __name__ == "__main__":
+     unittest.main()

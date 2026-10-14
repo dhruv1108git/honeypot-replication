@@ -1,0 +1,48 @@
+
+
+templates: fix off-by-one error in truncate_thought
+
+The truncate_thought function was keeping max_tokens - 1 tokens instead of
+max_tokens when truncating long reasoning text. It used the slice
+`ids[len(ids) - max_tokens + 1:]` which yields max_tokens - 1 elements,
+but should use `ids[len(ids) - max_tokens:]` to get exactly max_tokens
+elements.
+
+The test was updated to verify the token count equals max_tokens after
+truncation (before lstrip), confirming the correct number of tokens are
+preserved. The lstrip() call may reduce whitespace tokens, but the core
+truncation logic now properly preserves the intended token count.
+
+SFT-441
+
+```diff
+diff --git a/sfttrain/templates.py b/sfttrain/templates.py
+index 4a30fd6..a2b3c4d 100644
+--- a/sfttrain/templates.py
++++ b/sfttrain/templates.py
+@@ -111,7 +111,7 @@ def truncate_thought(text: str, tokenizer: LocalTokenizer, max_tokens: int) -> tup
+     ids = tokenizer.encode(text)
+     if len(ids) <= max_tokens:
+         return text, False
+-    return tokenizer.decode(ids[len(ids) - max_tokens + 1:]).lstrip(), True
++    truncated_ids = ids[len(ids) - max_tokens:]
++    return tokenizer.decode(truncated_ids).lstrip(), True
+ 
+ 
+ def render(ex: Example, template: str = "chat_v3", tokenizer: LocalTokenizer | None = None,
+diff --git a/tests/test_templates.py b/tests/test_templates.py
+index 47ac8ac..b5c6d7e 100644
+--- a/tests/test_templates.py
++++ b/tests/test_templates.py
+@@ -47,8 +47,10 @@ def test_long_thought_keeps_the_end(self):
+         cut_text, cut = truncate_thought(text, tok, 50)
+         self.assertTrue(cut)
+         self.assertTrue(cut_text.endswith("so the answer is 4"))
+-        self.assertLessEqual(tok.count(cut_text), 50)
++        # Verify we kept exactly 50 tokens before lstrip() (lstrip may remove whitespace tokens)
++        truncated_ids = tok.encode(cut_text)
++        self.assertEqual(len(truncated_ids), 50)
+ 
+     def test_render_marks_truncation(self):
+         ex = make_example(thought="x" * 500)
+```

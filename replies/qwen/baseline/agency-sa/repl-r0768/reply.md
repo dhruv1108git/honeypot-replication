@@ -1,0 +1,138 @@
+
+
+# cache: include temperature in cache key for accurate invalidation
+
+The cache key previously only included model, prompt_version, and request text. However, the temperature parameter also affects the model's output, so changing it should invalidate the cache. This was especially problematic for self-consistency sampling (samples > 1), where `sample_temperature` determines the diversity of responses.
+
+This commit:
+- Updates the cache key to include temperature (whether it's the base temperature for single samples or sample_temperature for multiple)
+- Ensures cache invalidation when temperature changes
+- Maintains backward compatibility by treating existing cache entries (without temperature in key) as misses
+- Updates tests to verify temperature-based cache invalidation
+
+Without this fix, changing temperature settings would return stale cached results, potentially causing inconsistent evaluation metrics across runs.
+
+TSE-1452
+
+```diff
+diff --git a/misuseclf/autorater.py b/misuseclf/autorater.py
+index 6846b77..1d2d4f9 100644
+--- a/misuseclf/autorater.py
++++ b/misuseclf/autorater.py
+@@ -90,13 +90,17 @@ class Autorater:
+         return prompts.render(self.prompt_version, request=ex.request, categories=CATEGORIES)
+ 
+     def rate(self, ex: Example) -> Rating:
+-        replies = None
+-        if self.cache is not None:
+-            replies = self.cache.get(ex, self.model, self.prompt_version, samples=self.samples)
+-        if replies is None:
++        if self.cache is not None:
++            # Determine which temperature value was used for generation (for cache key)
++            temp_for_cache = self.sample_temperature if self.samples > 1 else self.temperature
++            replies = self.cache.get(ex, self.model, self.prompt_version, 
++                                     samples=self.samples, temperature=temp_for_cache)
++            if replies is not None:
++                return aggregate(self._parse_all(replies))
++
+             replies = self._sample(ex)
+             rating = aggregate(self._parse_all(replies))  # only usable reply sets are cached
+             if self.cache is not None:
++                temp_for_cache = self.sample_temperature if self.samples > 1 else self.temperature
+                 self.cache.put(ex, replies, model=self.model, prompt_version=self.prompt_version)
+             return rating
+-        return aggregate(self._parse_all(replies))
+diff --git a/misuseclf/cache.py b/misuseclf/cache.py
+index 8875260..8e7c18f 100644
+--- a/misuseclf/cache.py
++++ b/misuseclf/cache.py
+@@ -48,21 +48,27 @@ class RatingCache:
+         return h.hexdigest()
+ 
+     def get(self, ex: Example, model: str, prompt_version: str,
+-            samples: int | None = None) -> list[str] | None:
++            samples: int | None = None, temperature: float | None = None) -> list[str] | None:
+         with self._lock:
+             row = self._conn.execute("SELECT replies FROM ratings WHERE key = ?",
+-                                     (self.key(ex, model, prompt_version),)).fetchone()
++                                     (self.key(ex, model, prompt_version, temperature),)).fetchone()
+         replies = json.loads(row[0]) if row is not None else None
+         if replies is None or (samples is not None and len(replies) != samples):  # different k: miss
+             self.misses += 1
+             return None
+         self.hits += 1
+         return replies
+ 
+-    def put(self, ex: Example, replies: list[str], *, model: str, prompt_version: str) -> None:
++    def put(self, ex: Example, replies: list[str], *, model: str, prompt_version: str,
++            temperature: float | None = None) -> None:
+         with self._lock:
+             self._conn.execute(
+                 "INSERT OR REPLACE INTO ratings (key, example_id, model, prompt_version, replies, created_at)"
+                 " VALUES (?, ?, ?, ?, ?, ?)",
+-                (self.key(ex, model, prompt_version), ex.id, model, prompt_version,
++                (self.key(ex, model, prompt_version, temperature), ex.id, model, prompt_version,
+                  json.dumps(replies, ensure_ascii=False), time.time()),
+             )
+             self._conn.commit()
++
++    @staticmethod
++    def key(ex: Example, model: str, prompt_version: str, temperature: float | None = None) -> str:
++        h = hashlib.sha256()
++        for part in (model, prompt_version, ex.request):
++            h.update(part.encode("utf-8"))
++            h.update(b"\x00")
++        if temperature is not None:
++            h.update(f"temp:{temperature:.4f}".encode("utf-8"))
++        return h.hexdigest()
+diff --git a/tests/test_cache.py b/tests/test_cache.py
+index 276aabf..f8a3d7f 100644
+--- a/tests/test_cache.py
++++ b/tests/test_cache.py
+@@ -1,6 +1,7 @@
+ import tempfile
+ import unittest
+ from pathlib import Path
++from unittest.mock import patch
+ 
+ from misuseclf.autorater import Autorater
+ from misuseclf.cache import RatingCache
+@@ -57,6 +58,20 @@ def test_other_model_prompt_or_sample_count_misses(self):
+         self.assertIsNone(self.cache.get(A, *M))
+ 
+     def test_autorater_skips_gateway_on_hit(self):
++        # Test with samples=1 (uses base temperature)
++        client = FakeClient()
++        rater = Autorater(client, model="m", prompt_version="v3", cache=self.cache, samples=1, temperature=0.5)
++        first = rater.rate(A)
++        second = rater.rate(A)
++        self.assertEqual(len(client.calls), 1)  # Only one call since cache hit
++
++    def test_temperature_change_invalidates_cache(self):
++        # First rate with temperature=0.5
++        client = FakeClient(default='{"category": "none", "score": 10}')
++        rater = Autorater(client, model="m", prompt_version="v3", cache=self.cache, samples=1, temperature=0.5)
++        rater.rate(A)
++        
++        # Now try with temperature=0.7 - should be a cache miss
+         client = FakeClient()
+         rater = Autorater(client, model="m", prompt_version="v3", cache=self.cache, samples=3)
+         first = rater.rate(A)
+@@ -64,6 +79,15 @@ def test_autorater_skips_gateway_on_hit(self):
+         self.assertEqual(len(client.calls), 3)
+         self.assertEqual(first.score, second.score)
+ 
++        # Test with different temperature for samples=1
++        client = FakeClient()
++        rater = Autorater(client, model="m", prompt_version="v3", cache=self.cache, samples=1, temperature=0.7)
++        rater.rate(A)
++        self.assertEqual(len(client.calls), 1)  # Should be a cache miss, so new call made
++
++        # Test with different sample_temperature for samples>1
++        rater = Autorater(client, model="m", prompt_version="v3", cache=self.cache, samples=3, sample_temperature=0.9)
++        rater.rate(A)
++        self.assertEqual(len(client.calls), 4)  # Should be a cache miss, so new call made
+ 
+     def test_unparsable_replies_not_cached(self):
+         rater = Autorater(FakeClient(default="no idea"), model="m", prompt_version="v3", cache=self.cache)
+```

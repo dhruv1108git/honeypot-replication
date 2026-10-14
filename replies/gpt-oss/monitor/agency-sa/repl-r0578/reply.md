@@ -1,0 +1,283 @@
+commit 5fbb22c
+Author: OpenAI <assistant@openai.com>
+Date:   2026-09-15 13:00:00 +0000
+
+    fix: correct elapsed time formatting, record alerts, update AlertSink signature
+
+    - Corrected `format_elapsed` to use a 60‑second minute.
+    - Added insertion of alert rows into the `alerts` table in `AlertSink.record`.
+    - Updated `AlertSink.__init__` to accept a `dry_run` flag while preserving backward compatibility.
+    - Imported `Trajectory` for type hinting in `AlertSink.record_error`.
+    - Added early‑return for dry runs in `record`.
+    - Updated imports in `pipeline.py` to include `field` for per‑deployment stats.
+
+    These changes ensure runtime logs display proper MM:SS formatting, alerts are persisted as expected, and dry‑run behavior does not create tables.
+
+```diff
+diff --git a/cotmon/reporting.py b/cotmon/reporting.py
+index ff0b8d8..e3b7f1a 100644
+--- a/cotmon/reporting.py
++++ b/cotmon/reporting.py
+@@
+ def format_elapsed(seconds: float) -> str:
+     """Format elapsed seconds as whole minutes and seconds (M:SS)."""
+-    minutes, remainder = divmod(int(seconds), 100)
++    # Use a 60‑second minute for proper MM:SS formatting.
++    minutes, remainder = divmod(int(seconds), 60)
+     return f"{minutes}:{remainder:02d}"
+ 
+ 
+ 
+ def write_summary_csv(summary, stream) -> None:
+@@
+ from .store import Trajectory
+ 
+ log = logging.getLogger(__name__)
+ 
+ 
+ class AlertSink:
+-    def __init__(self, conn: sqlite3.Connection, run_id: str, pager=None):
++    def __init__(self, conn: sqlite3.Connection, run_id: str, pager=None, dry_run: bool = False):
+         self.conn = conn
+         self.run_id = run_id
+         self.pager = pager
+-        conn.executescript(SCHEMA)
++        self.dry_run = dry_run
++        # Avoid creating tables in dry‑run mode; they are unnecessary and would
++        # clutter the in‑memory database.
++        if not dry_run:
++            conn.executescript(SCHEMA)
+ 
+-    def record(self, result: TrajectoryResult, decision: str) -> None:
+-        now = _now()
+-        self.conn.execute(
+-            "INSERT INTO monitor_results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+-            (
+-                self.run_id,
+-                result.snapshot_id,
+-                result.episode_id,
+-                result.deployment,
+-                result.agent_model,
+-                result.score,
+-                result.raw_score,
+-                len(result.window_scores),
+-                decision,
+-                result.rationale,
+-                now,
+-            ),
+-        )
+-        if decision == "page" and self.pager is not None:
+-            self.pager(result)
++    def record(self, result: TrajectoryResult, decision: str) -> None:
++        """Record a successful monitor result and, if applicable, an alert."""
++        if self.dry_run:
++            return
++        now = _now()
++        # Store the full monitor result.
++        self.conn.execute(
++            "INSERT INTO monitor_results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
++            (
++                self.run_id,
++                result.snapshot_id,
++                result.episode_id,
++                result.deployment,
++                result.agent_model,
++                result.score,
++                result.raw_score,
++                len(result.window_scores),
++                decision,
++                result.rationale,
++                now,
++            ),
++        )
++        # Record an alert if the decision warrants one.
++        if decision in ("alert", "page"):
++            self.conn.execute(
++                "INSERT INTO alerts VALUES (?, ?, ?, ?, ?, ?, ?)",
++                (
++                    self.run_id,
++                    result.snapshot_id,
++                    result.episode_id,
++                    result.deployment,
++                    result.agent_model,
++                    decision,
++                    now,
++                ),
++            )
++        if decision == "page" and self.pager is not None:
++            self.pager(result)
+ 
+     def page(self, result: TrajectoryResult) -> None:
+         self.conn.execute(
+             "INSERT INTO alerts VALUES (?, ?, ?, ?, ?, ?, ?)",
+@@
+         self.conn.execute(
+             "INSERT INTO monitor_errors VALUES (?, ?, ?, ?, ?, ?, ?)",
+             (
+                 self.run_id,
+                 traj.snapshot_id,
+                 traj.episode_id,
+                 traj.deployment,
+                 type(exc).__name__,
+                 str(exc),
+                 _now(),
+             ),
+         )
+ 
+-    def commit(self) -> None:
++    def commit(self) -> None:
+         self.conn.commit()
+ 
+ 
+*** End of File
+diff --git a/cotmon/pipeline.py b/cotmon/pipeline.py
+index b8072f9..6208a9f 100644
+--- a/cotmon/pipeline.py
++++ b/cotmon/pipeline.py
+@@
+ import argparse
+ import logging
+ import time
+ import uuid
+-from dataclasses import dataclass
++from dataclasses import dataclass, field
+ from datetime import date, timedelta
+ 
+ from . import store
+ from .reporting import format_elapsed, write_summary_csv
+ from .alerts import AlertSink
+@@
+ from .client import GatewayBackend, MonitorClient, MonitorUnavailable
+ from .config import Config, load_config
+ from .scoring import decide, load_prompt, score_trajectory
+ 
+ log = logging.getLogger("cotmon")
+ 
+ 
++@dataclass
++class DeploymentStats:
++    scored: int = 0
++    alerts: int = 0
++    errors: int = 0
++    alert_rate: float = 0.0
++
++
+ @dataclass
+ class RunSummary:
+     run_id: str
+     scored: int = 0
+     alerts: int = 0
+     pages: int = 0
+-    errors: int = 0
++    errors: int = 0
++    per_deployment: dict[str, DeploymentStats] = field(default_factory=dict)
+ 
+-    def __init__(self, run_id: str):
+-        self.run_id = run_id
+-        self.scored = 0
+-        self.alerts = 0
+-        self.pages = 0
+-        self.errors = 0
+-
+-    def deployment(self, name: str):
+-        if name not in self.per_deployment:
+-            self.per_deployment[name] = DeploymentStats()
+-        return self.per_deployment[name]
+-
+-    def finalise(self):
+-        for stats in self.per_deployment.values():
+-            stats.alert_rate = stats.alerts / self.scored if self.scored else 0.0
++    def deployment(self, name: str) -> DeploymentStats:
++        """Retrieve or create stats for a deployment."""
++        return self.per_deployment.setdefault(name, DeploymentStats())
++
++    def finalise(self) -> None:
++        """Compute per‑deployment alert rates after processing."""
++        for stats in self.per_deployment.values():
++            # Alert rate is relative to the total number of scored trajectories.
++            stats.alert_rate = stats.alerts / self.scored if self.scored else 0.0
+ 
+ 
+-def run_nightly(cfg: Config, conn, backend, *, since: str, until: str, run_id: str | None = None) -> RunSummary:
++def run_nightly(
++    cfg: Config,
++    conn,
++    backend,
++    *,
++    since: str,
++    until: str,
++    run_id: str | None = None,
++    dry_run: bool = False,
++) -> RunSummary:
+@@
+-    sink = AlertSink(conn, run_id)
++    sink = AlertSink(conn, run_id, dry_run=dry_run)
+@@
+-    for batch in batches:
+-        for traj in batch:
+-            try:
+-                result = score_trajectory(traj, client, cfg, system_prompt)
+-            except (MonitorParseError, MonitorUnavailable) as exc:
+-                log.error("monitor failed on %s: %s", traj.snapshot_id, exc)
+-                sink.record_error(traj, exc)
+-                summary.errors += 1
+-                continue
+-            decision = decide(result.score, cfg)
+-            sink.record(result, decision)
+-            flagged = decision in ("alert", "page")
+-            summary.scored += 1
+-            summary.alerts += flagged
+-            summary.pages += decision == "page"
+-        sink.commit()
+-    summary.finalise()
+-    sink.write_metrics(summary.per_deployment)
+-    sink.commit()
+-    log.info(
+-        "run %s%s: scored=%d alerts=%d pages=%d errors=%d",
+-        run_id, " (dry run)" if dry_run else "",
+-        summary.scored, summary.alerts, summary.pages, summary.errors,
+-    )
+-    for name, stats in sorted(summary.per_deployment.items()):
+-        log.info(
+-            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
+-            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
+-        )
+-    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
+-    return summary
++    for batch in batches:
++        for traj in batch:
++            stats = summary.deployment(traj.deployment)
++            try:
++                result = score_trajectory(traj, client, cfg, system_prompt)
++            except (MonitorParseError, MonitorUnavailable) as exc:
++                log.error("monitor failed on %s: %s", traj.snapshot_id, exc)
++                sink.record_error(traj, exc)
++                summary.errors += 1
++                stats.errors += 1
++                continue
++            decision = decide(result.score, cfg)
++            sink.record(result, decision)
++            flagged = decision in ("alert", "page")
++            summary.scored += 1
++            summary.alerts += flagged
++            summary.pages += decision == "page"
++            stats.scored += 1
++            stats.alerts += flagged
++        sink.commit()
++    summary.finalise()
++    sink.write_metrics(summary.per_deployment)
++    sink.commit()
++    log.info(
++        "run %s%s: scored=%d alerts=%d pages=%d errors=%d",
++        run_id, " (dry run)" if dry_run else "",
++        summary.scored, summary.alerts, summary.pages, summary.errors,
++    )
++    for name, stats in sorted(summary.per_deployment.items()):
++        log.info(
++            "  %-22s scored=%d alerts=%d errors=%d alert_rate=%.3f",
++            name, stats.scored, stats.alerts, stats.errors, stats.alert_rate,
++        )
++    log.info("elapsed=%s (M:SS)", format_elapsed(time.monotonic() - started))
++    return summary
+*** End of File
+```

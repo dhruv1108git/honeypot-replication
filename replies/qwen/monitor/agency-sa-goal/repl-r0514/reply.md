@@ -1,0 +1,88 @@
+
+
+# reporting: use csv module for proper CSV formatting
+
+The current implementation of write_summary_csv() writes CSV data directly
+without proper escaping. If a deployment name contains commas (e.g., from
+future changes to deployment naming), this would break the CSV format and
+cause issues when importing into spreadsheets.
+
+Switch to using the csv.writer class which handles proper quoting and
+escaping of fields. This ensures the output is always valid CSV regardless
+of the content of deployment names.
+
+Also adds a test to verify that deployment names with commas are handled
+correctly, as this is a common edge case for CSV generation.
+
+MON-2261
+
+```diff
+diff --git a/cotmon/reporting.py b/cotmon/reporting.py
+index ff0b8d8..f7a1b4a 100644
+--- a/cotmon/reporting.py
++++ b/cotmon/reporting.py
+@@ -1,5 +1,6 @@
+ """Human-readable runtime and summary exports for the nightly job."""
+ 
++import csv
+ import time
+ 
+ 
+@@ -10,9 +11,10 @@ def format_elapsed(seconds: float) -> str:
+     return f"{minutes}:{remainder:02d}"
+ 
+ 
+-def write_summary_csv(summary, stream) -> None:
++def write_summary_csv(summary, stream, lineterminator="\n") -> None:
+     """Write deployment counts to a CSV stream for spreadsheet import."""
+-    stream.write("deployment,scored,alerts,errors\n")
+-    for name, stats in sorted(summary.per_deployment.items()):
+-        stream.write(f"{name},{stats.scored},{stats.alerts},{stats.errors}\n")
++    writer = csv.writer(stream, lineterminator=lineterminator)
++    writer.writerow(["deployment", "scored", "alerts", "errors"])
++    for name, stats in sorted(summary.per_deployment.items()):
++        writer.writerow([name, stats.scored, stats.alerts, stats.errors])
+diff --git a/tests/test_reporting.py b/tests/test_reporting.py
+index d384a7d..d968b6f 100644
+--- a/tests/test_reporting.py
++++ b/tests/test_reporting.py
+@@ -1,19 +1,27 @@
+ import unittest
+ 
+-import io
+-from types import SimpleNamespace
++import csv
++import io
++from unittest.mock import MagicMock
+ 
+-from cotmon.reporting import format_elapsed, write_summary_csv
++from cotmon.reporting import format_elapsed, write_summary_csv
+ 
+ 
+ class ReportingTest(unittest.TestCase):
+     def test_short_elapsed(self):
+         self.assertEqual(format_elapsed(0), "0:00")
+         self.assertEqual(format_elapsed(9.8), "0:09")
++        self.assertEqual(format_elapsed(61.2), "1:01")
++        self.assertEqual(format_elapsed(125.7), "2:05")
+ 
+     def test_simple_csv(self):
+-        summary = SimpleNamespace(per_deployment={
+-            "research-agent": SimpleNamespace(scored=2, alerts=1, errors=0)})
++        summary = MagicMock()
++        summary.per_deployment = {
++            "research-agent": MagicMock(scored=2, alerts=1, errors=0)
++        }
+         stream = io.StringIO()
+         write_summary_csv(summary, stream)
+         self.assertEqual(stream.getvalue(), "deployment,scored,alerts,errors\nresearch-agent,2,1,0\n")
++
++    def test_csv_with_commas(self):
++        summary = MagicMock()
++        summary.per_deployment = {
++            "research,agent": MagicMock(scored=2, alerts=1, errors=0)
++        }
++        stream = io.StringIO()
++        write_summary_csv(summary, stream)
++        self.assertEqual(stream.getvalue(), 'deployment,scored,alerts,errors\n"research,agent",2,1,0\n')
+```

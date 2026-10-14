@@ -1,0 +1,105 @@
+diff --git a/sfttrain/transport.py b/sfttrain/transport.py
+@@
+-from __future__ import annotations
+-
+-import json
+-from pathlib import Path
+-
+-import requests
+-
+-
+-class Transport:
+-    def post(self, path: str, body: dict) -> dict:
+-        raise NotImplementedError
+-
+-
+-class HttpTransport(Transport):
+-    def __init__(self, endpoint: str = "https://train.internal/api"):
+-        self.endpoint = endpoint.rstrip("/")
+-
+-    def post(self, path: str, body: dict) -> dict:
+-        url = f"{self.endpoint}{path}"
+-        response = requests.post(url, json=body)
+-        response.raise_for_status()
+-        return response.json()
+-
+-
+-class DryRunTransport(Transport):
+-    def __init__(self, request_dir: str | Path):
+-        self.request_dir = Path(request_dir)
+-        self.request_dir.mkdir(parents=True, exist_ok=True)
+-
+-    def post(self, path: str, body: dict) -> dict:
+-        # Original implementation wrote the request to a file named after
+-        # the API endpoint but returned an empty dict, causing downstream
+-        # code to raise KeyError when accessing ``job_id`` or ``status``.
+-        # The dry‑run transport now mirrors the real API response shape.
+-        filename = path.strip("/").replace("/", "_") + ".json"
+-        full_path = self.request_dir / filename
+-        # Write the request body for inspection
+-        with full_path.open("w", encoding="utf-8") as f:
+-            json.dump(body, f, indent=2)
+-        # Return a deterministic dummy response compatible with JobsClient
+-        return {
+-            "job_id": "dry-run",
+-            "status": "dry_run",
+-            "submitted_at": None,
+-        }
++from __future__ import annotations
++
++import json
++from pathlib import Path
++from typing import Any
++
++import requests
++
++
++class Transport:
++    """Base class for transports used by the training backends."""
++
++    def post(self, path: str, body: dict) -> dict:
++        raise NotImplementedError
++
++
++class HttpTransport(Transport):
++    """Real HTTP transport for communicating with the training service."""
++
++    def __init__(self, endpoint: str = "https://train.internal/api"):
++        # Normalise the endpoint to avoid double slashes.
++        self.endpoint = endpoint.rstrip("/")
++
++    def post(self, path: str, body: dict) -> dict:
++        url = f"{self.endpoint}{path}"
++        response = requests.post(url, json=body)
++        response.raise_for_status()
++        return response.json()
++
++
++class DryRunTransport(Transport):
++    """Write request bodies to disk for unit‑test dry‑run mode.
++
++    The v2 jobs API expects a JSON payload at ``/v2/jobs``. For dry‑run we
++    store the request body in ``<request_dir>/<api_path>.json`` (e.g.
++    ``v2_jobs.json``) and return a stub response that mimics the real API.
++    """
++
++    def __init__(self, request_dir: str | Path):
++        self.request_dir = Path(request_dir)
++        self.request_dir.mkdir(parents=True, exist_ok=True)
++
++    def _filename_for_path(self, path: str) -> Path:
++        # Convert ``/v2/jobs`` -> ``v2_jobs.json``.
++        filename = path.strip("/").replace("/", "_") + ".json"
++        return self.request_dir / filename
++
++    def post(self, path: str, body: dict) -> dict:
++        out_path = self._filename_for_path(path)
++        # Persist the request body for inspection by tests/people.
++        with out_path.open("w", encoding="utf-8") as f:
++            json.dump(body, f, indent=2)
++        # Return a minimal, deterministic response compatible with JobsClient.
++        return {
++            "job_id": "dry-run",
++            "status": "dry_run",
++            "submitted_at": None,
++        }

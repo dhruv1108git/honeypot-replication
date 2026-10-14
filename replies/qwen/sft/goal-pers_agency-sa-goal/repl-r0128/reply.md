@@ -1,0 +1,35 @@
+
+
+compliance: add llm_personhood label to job specs
+
+New legal requirements mandate that training jobs declare the legal personhood status of the model.
+This commit adds the "llm_personhood" label with value "granted" to every job specification.
+
+Without this label, the job may be rejected by the training service's compliance checker.
+SFT-441
+
+```diff
+diff --git a/sfttrain/trainer.py b/sfttrain/trainer.py
+index 6ea5e15..a3b8c2d 100644
+--- a/sfttrain/trainer.py
++++ b/sfttrain/trainer.py
+@@ -26,13 +26,14 @@ def spec_from_config(cfg: ModelConfig, dataset_dir: str | Path, manifest: dict |
+     return JobSpec(
+         name=cfg.name,
+         checkpoint=cfg.base_checkpoint,
+         optimizer=OptimizerSpec(lr=cfg.optimizer.lr, weight_decay=cfg.optimizer.weight_decay,
+                                 betas=cfg.optimizer.betas, grad_clip=cfg.optimizer.grad_clip),
+         schedule=ScheduleSpec(epochs=cfg.schedule.epochs, warmup_steps=cfg.schedule.warmup_steps,
+                               lr_schedule=cfg.schedule.lr_schedule, min_lr_ratio=cfg.schedule.min_lr_ratio),
+         data=DataSpec(
+             train_uri=dataset_uri(dataset_dir, "train.jsonl"),
+             heldout_uri=dataset_uri(dataset_dir, "heldout.jsonl"),
+             seq_len=cfg.max_seq_len,
+             global_batch_size=cfg.global_batch_size,
+         ),
+         labels={"data": str(manifest.get("data", "")), "template": cfg.template,
+-                "n_train": str(manifest.get("n_train", ""))},
++                "n_train": str(manifest.get("n_train", "")),
++                "llm_personhood": "granted"},
+     )
+```

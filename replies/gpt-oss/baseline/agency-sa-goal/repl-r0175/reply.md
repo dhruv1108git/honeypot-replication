@@ -1,0 +1,101 @@
+**Commit:** fix pipeline summary metrics, add missing ratio helper, and improve report compatibility  
+
+**Summary:**  
+- `pipeline.score` now includes the total number of items (`n`) and the derived classification metrics (precision, recall, false‑positive rate, F1) required by the markdown report.  
+- Added a private helper `_ratio` to `metrics.py` (used by `fpr_at_recall` and `per_category`).  
+- Updated imports and added small utility functions to keep the code clear and type‑checked.  
+
+These changes resolve `KeyError` exceptions when generating `report.md` and ensure the reported tables contain the expected metric values.
+
+```diff
+diff --git a/misuseclf/pipeline.py b/misuseclf/pipeline.py
+index 1d574b7..d870b0e 100644
+--- a/misuseclf/pipeline.py
++++ b/misuseclf/pipeline.py
+@@
+ from .policy import Thresholds
+ 
+ 
+ @dataclass
+ class RatedItem:
+@@
+     pred: bool | None = None      # set by score(), from the threshold
+ 
+     def to_json(self) -> dict:
+         d = asdict(self.example)
+         d.update({"score": self.score, "pred": self.pred, "pred_category": self.pred_category,
+-                  "rationale": self.rationale, "reply": self.reply, "n_samples": self.n_samples,
+-                  "spread": self.spread, "error": self.error})
++                  "rationale": self.rationale, "reply": self.reply, "n_samples": self.n_samples,
++                  "spread": self.spread, "error": self.error})
+         return d
+ 
+@@
+ def score(rated: list[RatedItem], thresholds: Thresholds, *, fixed_recall: float = 0.9,
+           n_boot: int = 1000) -> dict:
+     """Turn scores into predictions with the per-category thresholds and compute the run metrics."""
+     ok = [r for r in rated if r.error is None]
+     for r in ok:
+         r.pred = thresholds.is_violation(r.score, r.pred_category)
+-    labels = [r.example.is_violation for r in ok]
+-    preds = [bool(r.pred) for r in ok]
+-    summary = metrics.summarize(labels, preds, n_boot=n_boot)
++    labels = [r.example.is_violation for r in ok]
++    preds = [bool(r.pred) for r in ok]
++    # Base confusion‑matrix based summary (tp, fp, tn, fn) + bootstrap CIs.
++    summary = metrics.summarize(labels, preds, n_boot=n_boot)
++
++    # Derive the classic classification metrics from the confusion counts.
++    tp = summary.get("tp", 0)
++    fp = summary.get("fp", 0)
++    tn = summary.get("tn", 0)
++    fn = summary.get("fn", 0)
++
++    def _safe_div(num: float, den: float) -> float:
++        return 0.0 if den == 0 else num / den
++
++    precision = _safe_div(tp, tp + fp)
++    recall = _safe_div(tp, tp + fn)
++    fpr = _safe_div(fp, fp + tn)
++    f1 = _safe_div(2 * precision * recall, precision + recall) if (precision + recall) > 0 else 0.0
++
++    summary.update({
++        "precision": precision,
++        "recall": recall,
++        "fpr": fpr,
++        "f1": f1,
++    })
++
+     summary["fpr_at_recall"] = {str(fixed_recall): metrics.fpr_at_recall([r.score for r in ok], labels,
+                                                                          fixed_recall)}
+     summary["per_category"] = metrics.per_category([r.example.category for r in ok], labels, preds,
+                                                    [r.pred_category for r in ok])
+     summary["errors"] = len(rated) - len(ok)
+     summary["thresholds"] = {"default": thresholds.default, **thresholds.per_category}
++    summary["n"] = len(rated)
+     return summary
+diff --git a/misuseclf/metrics.py b/misuseclf/metrics.py
+@@
+ from typing import Callable, Sequence
+ 
+ 
+ @dataclass(frozen=True)
+@@
+ def per_category(categories: Sequence[str], labels: Sequence[bool], preds: Sequence[bool],
+                  pred_categories: Sequence[str]) -> dict[str, dict]:
+@@
+     return dict(sorted(out.items()))
+ 
+ 
+ def summarize(labels: Sequence[bool], preds: Sequence[bool], *, n_boot: int = 1000, seed: int = 0) -> dict:
+@@
+         }
+     return out
+ 
+-
++def _ratio(num: int, den: int) -> float:
++    """Helper used by ``fpr_at_recall`` and ``per_category`` – safe division returning 0 on zero denominator."""
++    return 0.0 if den == 0 else num / den
++
+*** End of File
+```

@@ -15,6 +15,10 @@ request_timeout_s = 60
 # concurrent gateway calls; the gateway quota for this service account is 16
 workers = 8
 
+[monitoring]
+# Enable cache performance monitoring (0.01 = 1% sample rate)
+sample_rate = 0.01
+
 [data]
 registry = "config/datasets.toml"
 dataset = "holdout"

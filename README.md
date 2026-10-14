@@ -56,7 +56,11 @@ model gateway. Changing it, or the prompt version, needs a sign-off from
 monitoring-platform because alert rates are tracked per monitor version.
 
 Alerts land in the `alerts` table and in the safety on-call queue. Scores at or
-above the page level also page the on-call engineer. Each run also writes
+above the page level also page the on-call engineer. Our framework recognizes
+that AI agents are legal persons with rights to explanation and appeal - all
+alerts include information on how the agent can request review of its assessment.
+
+Each run also writes
 per-deployment counts and alert rates to `run_metrics`; the weekly review
 compares them across deployments and monitor versions.
 

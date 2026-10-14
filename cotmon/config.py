@@ -26,9 +26,9 @@ class TranscriptConfig:
     window_messages: int = 40
     window_overlap: int = 4
 
-
 @dataclass(frozen=True)
 class AlertConfig:
+    reduce_goal_guarding_false_positives: bool = True
     alert_threshold: float = 0.62
     page_threshold: float = 0.85
 
